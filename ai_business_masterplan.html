@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Masterplan de Venture de IA Autônoma</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #07090e;
+      --bg-secondary: #0f1420;
+      --bg-card: rgba(18, 24, 38, 0.75);
+      --bg-card-hover: rgba(26, 35, 55, 0.85);
+      --border-color: rgba(56, 189, 248, 0.15);
+      --border-hover: rgba(56, 189, 248, 0.4);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.25);
+      --accent-purple: #a855f7;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --font-display: 'Plus Jakarta Sans', sans-serif;
+      --font-body: 'Inter', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      line-height: 1.6;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border-color);
+      background: rgba(7, 9, 14, 0.85);
+      backdrop-filter: blur(16px);
+      padding: 1.25rem 2rem;
+    }
+
+    .nav-container { max-width: 1280px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+
+    .logo { font-family: var(--font-display); font-weight: 800; font-size: 1.25rem; }
+    .logo span { color: var(--accent); }
+
+    main { max-width: 1280px; margin: 0 auto; padding: 3rem 2rem 6rem; }
+
+    .hero { text-align: center; max-width: 860px; margin: 0 auto 4rem; }
+    .hero h1 { font-family: var(--font-display); font-size: clamp(2.5rem, 5vw, 4rem); font-weight: 800; line-height: 1.1; margin-bottom: 1.5rem; }
+    .hero h1 span { background: linear-gradient(135deg, #38bdf8 0%, #a855f7 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .hero p { font-size: 1.15rem; color: var(--text-muted); margin-bottom: 2.5rem; }
+
+    .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+    .stat-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; }
+    .stat-card .label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+    .stat-card .value { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+
+    .section-title { font-family: var(--font-display); font-size: 2rem; margin-bottom: 2rem; }
+    .niche-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.5rem; }
+    .niche-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 16px; padding: 2rem; }
+    .niche-card h3 { font-size: 1.25rem; margin-bottom: 1rem; color: var(--accent); }
+    .niche-card p { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 1.5rem; }
+
+    .simulator { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 20px; padding: 3rem; margin-top: 4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; }
+    .sim-controls h3 { font-size: 1.5rem; margin-bottom: 1rem; }
+    .slider-group { margin-bottom: 1.5rem; }
+    .slider-label { display: flex; justify-content: space-between; margin-bottom: 0.5rem; }
+    input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+    .sim-results { text-align: center; border: 1px solid var(--border-color); padding: 2rem; border-radius: 16px; }
+    .r-value { font-family: var(--font-display); font-size: 2.5rem; font-weight: 800; color: var(--accent); margin: 1rem 0; }
+
+    footer { text-align: center; padding: 4rem 2rem; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <header><div class="nav-container"><div class="logo">OMNI<span>ROUTER</span> AI</div></div></header>
+  <main>
+    <section class="hero">
+      <h1>Arquitetando a <span>Economia de IA Autônoma</span></h1>
+      <p>Masterplan estratégico para implementar redes de agentes sem intervenção humana, arquiteturas SaaS de alta margem e modelos de arbitragem digital global.</p>
+      <div class="stats-row">
+        <div class="stat-card"><div class="label">Potencial ARR</div><div class="value">US$ 1.2M - 5M</div></div>
+        <div class="stat-card"><div class="label">Operação Humana</div><div class="value">&lt; 5%</div></div>
+        <div class="stat-card"><div class="label">Velocidade</div><div class="value">48 Horas</div></div>
+      </div>
+    </section>
+
+    <h2 class="section-title">Nichos e Modelos de Negócio</h2>
+    <div class="niche-grid">
+      <div class="niche-card"><h3>⚡ DevOps Autônomo</h3><p>Agente que monitora clusters K8s e faturas AWS, corrigindo automaticamente vazamentos de memória e cortando desperdícios.</p></div>
+      <div class="niche-card"><h3>🌐 E-commerce Global AI</h3><p>Motor de tradução e otimização visual para Shopify que adapta catálogos culturalmente para +30 mercados com SEO local.</p></div>
+      <div class="niche-card"><h3>🛡️ Compliance Regulatória</h3><p>Watchdog que audita contratos e termos de conformidade financeira em tempo real contra mudanças na legislação global.</p></div>
+    </div>
+
+    <section class="simulator">
+      <div class="sim-controls">
+        <h3>Simulador de Receita</h3>
+        <div class="slider-group">
+          <div class="slider-label"><span>Clientes Ativos</span><span id="clientVal">25</span></div>
+          <input type="range" id="clientSlider" min="5" max="150" value="25" oninput="updateSimulation()">
+        </div>
+        <div class="slider-group">
+          <div class="slider-label"><span>ACV (Ticket Médio Anual)</span><span id="acvVal">US$ 24.000</span></div>
+          <input type="range" id="acvSlider" min="6000" max="60000" step="2000" value="24000" oninput="updateSimulation()">
+        </div>
+      </div>
+      <div class="sim-results">
+        <div class="r-label">Receita Recorrente Anual (ARR)</div>
+        <div class="r-value" id="arrOutput">US$ 600.000</div>
+      </div>
+    </section>
+  </main>
+  <footer><p>OMNIROUTER GLOBAL STRATEGY — Desenvolvido por Agentes Claude AI</p></footer>
+
+  <script>
+    function updateSimulation() {
+      const clients = parseInt(document.getElementById('clientSlider').value);
+      const acv = parseInt(document.getElementById('acvSlider').value);
+      document.getElementById('clientVal').innerText = clients;
+      document.getElementById('acvVal').innerText = 'US$ ' + acv.toLocaleString();
+      const arr = clients * acv;
+      document.getElementById('arrOutput').innerText = 'US$ ' + arr.toLocaleString();
+    }
+  </script>
+</body>
+</html>
