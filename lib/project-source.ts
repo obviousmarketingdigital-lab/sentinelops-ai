@@ -44,6 +44,14 @@ export function createInMemorySource(
   };
 }
 
+/** Thrown when GitHub refuses because the hourly quota is spent. */
+export class RateLimitedError extends Error {
+  constructor() {
+    super('GitHub rate limit reached. Set GITHUB_TOKEN to raise it from 60 to 5000 requests an hour.');
+    this.name = 'RateLimitedError';
+  }
+}
+
 export interface RepositoryVisibility {
   exists: boolean;
   isPublic: boolean;
@@ -79,6 +87,12 @@ export async function inspectRepositoryVisibility(
   if (response.status === 404) return { exists: false, isPublic: false };
 
   if (!response.ok) {
+    // Anonymous requests get 60 an hour per IP, which one deployment shares
+    // across every visitor. Saying so beats a generic failure, because the
+    // remedy is a token rather than a retry.
+    if (response.headers.get('x-ratelimit-remaining') === '0') {
+      throw new RateLimitedError();
+    }
     throw new Error(`GitHub returned ${response.status} ${response.statusText}`);
   }
 

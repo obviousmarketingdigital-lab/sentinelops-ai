@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { auditLocalProject, auditProject } from '@/lib/local-project-analyzer';
-import { createGitHubSource, inspectRepositoryVisibility } from '@/lib/project-source';
+import { RateLimitedError, createGitHubSource, inspectRepositoryVisibility } from '@/lib/project-source';
 import { BADGE_COLORS, badgeStateFor, renderBadge, type BadgeState } from '@/lib/badge';
 import { readCache, writeCache } from '@/lib/audit-cache';
 
@@ -60,9 +60,10 @@ export async function GET(request: Request) {
     const state = badgeStateFor(report);
     writeCache<BadgeState>(cacheKey, state);
     return svg(state, 300);
-  } catch {
-    // Not cached: a rate limit or a network blip should not pin "unavailable"
-    // onto a repository for the next five minutes.
-    return svg({ label: 'unavailable', color: BADGE_COLORS.unknown }, 60);
+  } catch (error) {
+    // Not cached: a rate limit or a network blip should not pin a failure onto
+    // a repository for the next five minutes.
+    const label = error instanceof RateLimitedError ? 'rate limited' : 'unavailable';
+    return svg({ label, color: BADGE_COLORS.unknown }, 60);
   }
 }
