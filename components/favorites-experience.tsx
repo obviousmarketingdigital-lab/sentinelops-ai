@@ -24,7 +24,7 @@ export function FavoritesExperience() {
   return (
     <main className="results-page favorites-page">
       <header className="site-header site-header--results">
-        <a className="brand" href="/"><span className="brand-mark"><span /></span><span>maré<span className="brand-dot">.</span></span></a>
+        <a className="brand" href="/imoveis"><span className="brand-mark"><span /></span><span>maré<span className="brand-dot">.</span></span></a>
         <nav className="desktop-nav"><a href="/resultados">Buscar imóveis</a><a href="/resultados#fontes">Nossas fontes</a><a href="/resultados#sobre">Sobre a Maré</a></nav>
         <div className="header-actions"><a className="header-link header-link--active" href="/favoritos">Favoritos</a><button className="button button--outline button--small">Anunciar imóvel</button><button className="mobile-menu" aria-label="Abrir menu"><MenuIcon /></button></div>
       </header>
@@ -36,7 +36,7 @@ export function FavoritesExperience() {
         <p className="favorites-note">Os favoritos ficam salvos somente neste navegador. Eles não exigem conta e não são sincronizados entre dispositivos.</p>
       </section>
 
-      <footer className="site-footer"><div className="container footer-inner"><div><a className="brand brand--footer" href="/"><span className="brand-mark"><span /></span><span>maré<span className="brand-dot">.</span></span></a><p>Encontrar seu lugar<br />começa por aqui.</p></div><div className="footer-links"><div><strong>Explorar</strong><a href="/resultados">Todos os imóveis</a><a href="/resultados?type=house">Casas</a><a href="/resultados?type=land">Terrenos</a></div><div><strong>Sobre</strong><a href="/resultados#como-funciona">Como funciona</a><a href="/resultados#fontes">Nossas fontes</a><a href="/resultados#sobre">Contato</a></div></div></div><div className="container footer-bottom"><span>© 2026 Maré Imóveis · Garopaba, SC</span><span>Uma pesquisa, todos os lugares.</span></div></footer>
+      <footer className="site-footer"><div className="container footer-inner"><div><a className="brand brand--footer" href="/imoveis"><span className="brand-mark"><span /></span><span>maré<span className="brand-dot">.</span></span></a><p>Encontrar seu lugar<br />começa por aqui.</p></div><div className="footer-links"><div><strong>Explorar</strong><a href="/resultados">Todos os imóveis</a><a href="/resultados?type=house">Casas</a><a href="/resultados?type=land">Terrenos</a></div><div><strong>Sobre</strong><a href="/resultados#como-funciona">Como funciona</a><a href="/resultados#fontes">Nossas fontes</a><a href="/resultados#sobre">Contato</a></div></div></div><div className="container footer-bottom"><span>© 2026 Maré Imóveis · Garopaba, SC</span><span>Uma pesquisa, todos os lugares.</span></div></footer>
     </main>
   );
 }

@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Maré · Imóveis em Garopaba",
-  description: "Uma busca simples para encontrar imóveis à venda em Garopaba, Santa Catarina.",
+  title: "Sentinel",
+  description: "Repository audit, WhatsApp assistant and property search sharing one deployment.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -78,8 +78,8 @@ export function SecretaryChat() {
   return (
     <main className="secretary-page">
       <header className="site-header container secretary-header">
-        <Link className="brand" href="/"><span className="brand-mark"><span /></span><span>axiss<span className="brand-dot">.</span></span></Link>
-        <Link className="secretary-back" href="/"><ArrowRightIcon size={15} className="secretary-back__icon" /> Voltar para o site</Link>
+        <Link className="brand" href="/secretaria"><span className="brand-mark"><span /></span><span>axiss<span className="brand-dot">.</span></span></Link>
+        <Link className="secretary-back" href="/secretaria"><ArrowRightIcon size={15} className="secretary-back__icon" /> Voltar para o site</Link>
       </header>
 
       <section className="secretary-shell container">
