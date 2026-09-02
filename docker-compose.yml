@@ -1,11 +1,10 @@
-version: '3.8'
-
 services:
   sentinelops-platform:
     build: .
     ports:
-      - "3009:3009"
+      - "10000:10000"
     environment:
       - NODE_ENV=production
-      - PORT=3009
+      - PORT=10000
+      - HOSTNAME=0.0.0.0
     restart: always
