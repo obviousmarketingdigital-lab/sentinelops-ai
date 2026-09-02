@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { analyzeCloudInfrastructure } from '@/lib/cloud-analyzer';
+import { auditLocalProject } from '@/lib/local-project-analyzer';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const report = analyzeCloudInfrastructure();
-    return NextResponse.json({ success: true, report });
+    const report = await auditLocalProject();
+    return NextResponse.json({ success: true, report }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return NextResponse.json(
       { success: false, error: (error as Error).message },

@@ -1,12 +1,21 @@
 import { NextResponse } from 'next/server';
 import { auditLocalProject } from '@/lib/local-project-analyzer';
 
-export async function GET() {
-  const report = auditLocalProject();
-  const score = report.healthScore;
-  const color = score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444';
+export const dynamic = 'force-dynamic';
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="140" height="20" role="img" aria-label="Sentinel Security: ${score}/100">
+export async function GET() {
+  const report = await auditLocalProject();
+  const label = report.healthScore === null ? 'n/a' : `${report.healthScore}/100`;
+  const color =
+    report.healthScore === null
+      ? '#64748b'
+      : report.healthScore > 80
+        ? '#10b981'
+        : report.healthScore > 60
+          ? '#f59e0b'
+          : '#ef4444';
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="140" height="20" role="img" aria-label="Sentinel: ${label}">
   <linearGradient id="b" x2="0" y2="100%">
     <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
     <stop offset="1" stop-opacity=".1"/>
@@ -22,8 +31,8 @@ export async function GET() {
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
     <text x="32.5" y="15" fill="#010101" fill-opacity=".3">sentinel</text>
     <text x="32.5" y="14" fill="#e2e8f0">sentinel</text>
-    <text x="102.5" y="15" fill="#010101" fill-opacity=".3">${score}/100</text>
-    <text x="102.5" y="14" fill="#ffffff">${score}/100</text>
+    <text x="102.5" y="15" fill="#010101" fill-opacity=".3">${label}</text>
+    <text x="102.5" y="14" fill="#ffffff">${label}</text>
   </g>
 </svg>`;
 

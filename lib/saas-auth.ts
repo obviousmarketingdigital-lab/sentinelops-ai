@@ -1,3 +1,7 @@
+export const SAAS_SAMPLE_NOTICE =
+  'Illustrative organization. There is no authentication, no tenant database and no billing behind ' +
+  'this tab; tier changes live in process memory and are lost on restart.';
+
 export interface Organization {
   id: string;
   name: string;

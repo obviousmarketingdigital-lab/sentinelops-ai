@@ -1,13 +1,17 @@
 import { NextResponse } from 'next/server';
-import { getMockOrganization, checkQuota } from '@/lib/saas-auth';
+import { SAAS_SAMPLE_NOTICE, checkQuota, getMockOrganization } from '@/lib/saas-auth';
 
-let currentOrg = getMockOrganization();
+export const dynamic = 'force-dynamic';
+
+const currentOrg = getMockOrganization();
 
 export async function GET() {
   return NextResponse.json({
     success: true,
+    mode: 'sample',
+    notice: SAAS_SAMPLE_NOTICE,
     organization: currentOrg,
-    hasQuota: checkQuota(currentOrg)
+    hasQuota: checkQuota(currentOrg),
   });
 }
 
@@ -17,23 +21,22 @@ export async function POST(request: Request) {
 
     if (action === 'upgrade' && tier) {
       currentOrg.tier = tier;
-      if (tier === 'ENTERPRISE') {
-        currentOrg.monthlyQuota = 5000;
-      } else if (tier === 'PRO') {
-        currentOrg.monthlyQuota = 500;
-      } else {
-        currentOrg.monthlyQuota = 50;
-      }
+      currentOrg.monthlyQuota = tier === 'ENTERPRISE' ? 5000 : tier === 'PRO' ? 500 : 50;
     } else if (action === 'increment_scan') {
       currentOrg.scansUsed += 1;
     }
 
     return NextResponse.json({
       success: true,
+      mode: 'sample',
+      notice: SAAS_SAMPLE_NOTICE,
       organization: currentOrg,
-      hasQuota: checkQuota(currentOrg)
+      hasQuota: checkQuota(currentOrg),
     });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: (error as Error).message },
+      { status: 500 },
+    );
   }
 }

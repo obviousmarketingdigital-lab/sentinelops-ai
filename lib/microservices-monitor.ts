@@ -1,3 +1,7 @@
+export const FLEET_SAMPLE_NOTICE =
+  'Illustrative fleet. These services are not probed over the network; the health scores and ' +
+  'incident counts are fixed sample values kept in memory and reset when the process restarts.';
+
 export interface MicroserviceHealth {
   id: string;
   name: string;

@@ -12,18 +12,24 @@ export interface CloudResourceAnomaly {
 
 export interface SentinelReport {
   timestamp: string;
+  /**
+   * 'sample' means the figures below are illustrative and were not measured
+   * against any cloud account. There is currently no other mode: connecting a
+   * real account requires the AWS Cost Explorer and CloudWatch SDKs, which this
+   * project does not depend on yet.
+   */
+  mode: 'sample';
+  notice: string;
   totalMonthlyWasteUSD: number;
   anomaliesCount: number;
   anomalies: CloudResourceAnomaly[];
 }
 
-export function analyzeCloudInfrastructure(mockMode = true): SentinelReport {
-  if (!mockMode) {
-    // Real AWS Cost Explorer & CloudWatch SDK integration would go here
-    // using @aws-sdk/client-cost-explorer and @aws-sdk/client-cloudwatch
-  }
+export const CLOUD_SAMPLE_NOTICE =
+  'Illustrative data. No AWS account is connected, so nothing here was measured. ' +
+  'Connecting a real account requires AWS credentials and the Cost Explorer and CloudWatch SDKs.';
 
-  // Simulated high-value cloud anomalies detected by the Sentinel Agent
+export function analyzeCloudInfrastructure(): SentinelReport {
   const anomalies: CloudResourceAnomaly[] = [
     {
       id: 'res-001',
@@ -75,6 +81,8 @@ export function analyzeCloudInfrastructure(mockMode = true): SentinelReport {
 
   return {
     timestamp: new Date().toISOString(),
+    mode: 'sample',
+    notice: CLOUD_SAMPLE_NOTICE,
     totalMonthlyWasteUSD,
     anomaliesCount: anomalies.length,
     anomalies

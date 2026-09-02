@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import { applyFix, getAppliedFixes } from '@/lib/data-store';
 import { GitHubService } from '@/lib/github-service';
 import { auditLocalProject } from '@/lib/local-project-analyzer';
-import { generateAIPatch } from '@/lib/ai-patcher';
+import { buildFindingReport } from '@/lib/ai-patcher';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const fixes = await getAppliedFixes();
@@ -12,50 +14,55 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const { id } = await request.json();
-    const localReport = auditLocalProject();
-    const finding = localReport.findings.find((f) => f.id === id);
+    const report = await auditLocalProject();
+    const finding = report.findings.find((item) => item.id === id);
 
     if (!finding) {
       return NextResponse.json({ success: false, error: 'Finding not found' }, { status: 404 });
     }
 
-    // Generate dynamic generative AI patch based on finding category
-    const aiPatch = generateAIPatch({
-      findingId: finding.id,
-      title: finding.title,
-      description: finding.description,
-      recommendation: finding.recommendation,
-      category: finding.category,
-    });
-
     const github = new GitHubService();
-    let prUrl = '';
+    const repoOwner = process.env.GITHUB_OWNER;
+    const repoName = process.env.GITHUB_REPO;
 
-    if (github.hasToken()) {
-      try {
-        const branchName = `sentinel-ai-fix-${id}-${Date.now().toString().slice(-4)}`;
-        const result = await github.createPullRequest({
-          repoOwner: process.env.GITHUB_OWNER || 'obviousmarketingdigital-lab',
-          repoName: process.env.GITHUB_REPO || 'sentinel-devops-agent',
-          title: `🤖 [Sentinel AI Patcher] Fix: ${finding.title}`,
-          body: `### Autonomous Generative Remediation\n\n**Category:** ${finding.category}\n**Finding:** ${finding.description}\n**Recommendation:** ${finding.recommendation}\n\n**AI Explanation:** ${aiPatch.explanation}\n\n*Generated automatically by DevOps Sentinel Autonomous Agent.*`,
-          branchName,
-          filePath: aiPatch.filePath,
-          fileContent: aiPatch.fileContent,
-        });
-        prUrl = result.prUrl;
-      } catch (err: any) {
-        console.warn('GitHub API PR creation failed, falling back to simulation:', err.message);
-        prUrl = `https://github.com/${process.env.GITHUB_OWNER || 'obviousmarketingdigital-lab'}/${process.env.GITHUB_REPO || 'sentinel-devops-agent'}/pull/${Math.floor(Math.random() * 900) + 100} (Simulated fallback due to API error)`;
-      }
-    } else {
-      // Graceful fallback simulation when GITHUB_TOKEN is not configured yet
-      prUrl = `https://github.com/omnirouter/garopaba-imoveis-starter/pull/${Math.floor(Math.random() * 900) + 100} (Mock PR - Add GITHUB_TOKEN to enable real PRs)`;
+    // No pull request is invented when the integration is not configured. An
+    // unconfigured agent reports that it is unconfigured.
+    if (!github.hasToken() || !repoOwner || !repoName) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'GitHub integration is not configured. Set GITHUB_TOKEN, GITHUB_OWNER and GITHUB_REPO to let the agent open pull requests.',
+        },
+        { status: 412 },
+      );
     }
 
-    const fixes = await applyFix(id, prUrl);
-    return NextResponse.json({ success: true, prUrl, fixes });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const patch = buildFindingReport(finding);
+
+    try {
+      const result = await github.createPullRequest({
+        repoOwner,
+        repoName,
+        title: `[Sentinel] ${finding.title}`,
+        body: patch.body,
+        branchName: `sentinel/${finding.id}-${Date.now().toString().slice(-6)}`,
+        filePath: patch.filePath,
+        fileContent: patch.fileContent,
+      });
+
+      const fixes = await applyFix(id, result.prUrl);
+      return NextResponse.json({ success: true, prUrl: result.prUrl, fixes });
+    } catch (error) {
+      return NextResponse.json(
+        { success: false, error: `GitHub rejected the request: ${(error as Error).message}` },
+        { status: 502 },
+      );
+    }
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: (error as Error).message },
+      { status: 500 },
+    );
   }
 }

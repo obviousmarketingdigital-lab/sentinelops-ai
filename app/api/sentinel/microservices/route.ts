@@ -1,11 +1,18 @@
 import { NextResponse } from 'next/server';
-import { getMicroservicesStatus, sweepMicroservice } from '@/lib/microservices-monitor';
+import {
+  FLEET_SAMPLE_NOTICE,
+  getMicroservicesStatus,
+  sweepMicroservice,
+} from '@/lib/microservices-monitor';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const services = getMicroservicesStatus();
   return NextResponse.json({
     success: true,
-    services
+    mode: 'sample',
+    notice: FLEET_SAMPLE_NOTICE,
+    services: getMicroservicesStatus(),
   });
 }
 
@@ -15,12 +22,16 @@ export async function POST(request: Request) {
     if (!id) {
       return NextResponse.json({ success: false, error: 'Service ID required' }, { status: 400 });
     }
-    const updatedServices = sweepMicroservice(id);
     return NextResponse.json({
       success: true,
-      services: updatedServices
+      mode: 'sample',
+      notice: FLEET_SAMPLE_NOTICE,
+      services: sweepMicroservice(id),
     });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: (error as Error).message },
+      { status: 500 },
+    );
   }
 }

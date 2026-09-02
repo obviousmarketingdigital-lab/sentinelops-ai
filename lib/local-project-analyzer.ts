@@ -1,3 +1,6 @@
+import fs from 'fs/promises';
+import path from 'path';
+
 export interface LocalAuditFinding {
   id: string;
   category: 'Dependencies' | 'Docker' | 'TypeScript' | 'Security';
@@ -6,61 +9,320 @@ export interface LocalAuditFinding {
   impact: 'Low' | 'Medium' | 'High';
   recommendation: string;
   autoFixAvailable: boolean;
+  /** Exact text observed in the project that triggered this finding. */
+  evidence: string;
+  source: string;
 }
 
 export interface LocalAuditReport {
   projectName: string;
+  projectRoot: string;
   timestamp: string;
-  healthScore: number;
+  /** False when the source tree is not reachable, e.g. a standalone container. */
+  analyzable: boolean;
+  filesInspected: string[];
+  filesMissing: string[];
+  healthScore: number | null;
   findingsCount: number;
   findings: LocalAuditFinding[];
+  notes: string[];
 }
 
-export function auditLocalProject(): LocalAuditReport {
-  const findings: LocalAuditFinding[] = [
-    {
-      id: 'loc-001',
-      category: 'Dependencies',
-      title: 'Unoptimized Heavy Dependencies',
-      description: 'Detected unminified or monolithic packages in package.json that increase bundle size and serverless cold start times.',
-      impact: 'Medium',
-      recommendation: 'Replace monolithic imports with modular imports (e.g. lodash-es).',
-      autoFixAvailable: true
-    },
-    {
-      id: 'loc-002',
-      category: 'Docker',
-      title: 'Non-Multi-Stage Dockerfile',
-      description: 'Dockerfile does not use multi-stage builds, leading to bloated production container images (>1.2GB).',
-      impact: 'High',
-      recommendation: 'Refactor Dockerfile to use multi-stage build with alpine base image.',
-      autoFixAvailable: true
-    },
-    {
-      id: 'loc-003',
-      category: 'TypeScript',
-      title: 'Strict Null Checks & Any Types',
-      description: 'Found 14 instances of implicit `any` types and relaxed type checking in legacy utility files.',
-      impact: 'Medium',
-      recommendation: 'Enable strict type enforcement and replace `any` with specific interfaces.',
-      autoFixAvailable: true
-    },
-    {
-      id: 'loc-004',
-      category: 'Security',
-      title: 'Outdated Dependencies with Vulnerabilities',
-      description: 'Found 2 packages with moderate CVE vulnerabilities in transitive dependencies.',
-      impact: 'High',
-      recommendation: 'Run `npm audit fix` or update dependency lockfile.',
-      autoFixAvailable: true
+const IMPACT_PENALTY: Record<LocalAuditFinding['impact'], number> = {
+  High: 15,
+  Medium: 8,
+  Low: 3,
+};
+
+async function readIfPresent(root: string, relative: string): Promise<string | null> {
+  try {
+    return await fs.readFile(path.join(root, relative), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * tsconfig.json allows comments and trailing commas; JSON.parse does not.
+ *
+ * This scans character by character instead of using regular expressions,
+ * because a path value such as "@/*" contains the characters that open a block
+ * comment. A regex would treat it as one and swallow the rest of the file.
+ */
+function stripJsonc(raw: string): string {
+  let out = '';
+  let inString = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    const next = raw[i + 1];
+
+    if (inLineComment) {
+      if (char === '\n') {
+        inLineComment = false;
+        out += char;
+      }
+      continue;
     }
-  ];
+
+    if (inBlockComment) {
+      if (char === '*' && next === '/') {
+        inBlockComment = false;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (inString) {
+      out += char;
+      if (char === '\\') {
+        out += next ?? '';
+        i += 1;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      out += char;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      inLineComment = true;
+      i += 1;
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      inBlockComment = true;
+      i += 1;
+      continue;
+    }
+
+    // Drop a trailing comma before a closing brace or bracket.
+    if (char === ',') {
+      const rest = raw.slice(i + 1);
+      const nextMeaningful = rest.match(/^\s*([}\]])/);
+      if (nextMeaningful) continue;
+    }
+
+    out += char;
+  }
+
+  return out;
+}
+
+function parseJsonc(raw: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(stripJsonc(raw));
+  } catch {
+    return null;
+  }
+}
+
+function inspectDockerfile(dockerfile: string): LocalAuditFinding[] {
+  const findings: LocalAuditFinding[] = [];
+  const fromLines = dockerfile
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^FROM\s/i.test(line));
+
+  const isMultiStage = fromLines.length > 1 && fromLines.some((line) => /\sAS\s/i.test(line));
+  if (!isMultiStage) {
+    findings.push({
+      id: 'docker-single-stage',
+      category: 'Docker',
+      title: 'Dockerfile without multi-stage build',
+      description:
+        `The Dockerfile declares ${fromLines.length} build stage(s). Without separate build and runtime stages, ` +
+        'compilers and dev dependencies ship inside the production image.',
+      impact: 'High',
+      recommendation: 'Split the Dockerfile into a builder stage and a slim runtime stage.',
+      autoFixAvailable: false,
+      evidence: fromLines.join(' | ') || 'no FROM instruction found',
+      source: 'Dockerfile',
+    });
+  }
+
+  if (!/^FROM\s+\S*(alpine|slim)/im.test(dockerfile)) {
+    findings.push({
+      id: 'docker-heavy-base',
+      category: 'Docker',
+      title: 'Runtime image does not use a slim base',
+      description: 'No alpine or slim base image was found, which inflates image size and attack surface.',
+      impact: 'Medium',
+      recommendation: 'Use an -alpine or -slim tag for the runtime stage.',
+      autoFixAvailable: false,
+      evidence: fromLines.join(' | '),
+      source: 'Dockerfile',
+    });
+  }
+
+  if (!/^\s*USER\s+/im.test(dockerfile)) {
+    findings.push({
+      id: 'docker-root-user',
+      category: 'Security',
+      title: 'Container runs as root',
+      description: 'No USER instruction is present, so the process runs as root inside the container.',
+      impact: 'Medium',
+      recommendation: 'Create an unprivileged user and add a USER instruction before CMD.',
+      autoFixAvailable: false,
+      evidence: 'no USER instruction in Dockerfile',
+      source: 'Dockerfile',
+    });
+  }
+
+  if (/RUN\s+npm\s+install/i.test(dockerfile) && !/RUN\s+npm\s+ci/i.test(dockerfile)) {
+    findings.push({
+      id: 'docker-npm-install',
+      category: 'Dependencies',
+      title: 'Image build uses npm install instead of npm ci',
+      description:
+        'npm install may resolve versions differently than the lockfile, which makes builds non-reproducible.',
+      impact: 'Medium',
+      recommendation: 'Use npm ci so the build always matches package-lock.json.',
+      autoFixAvailable: false,
+      evidence: 'RUN npm install',
+      source: 'Dockerfile',
+    });
+  }
+
+  return findings;
+}
+
+export async function auditLocalProject(projectRoot = process.cwd()): Promise<LocalAuditReport> {
+  const timestamp = new Date().toISOString();
+  const filesInspected: string[] = [];
+  const filesMissing: string[] = [];
+  const findings: LocalAuditFinding[] = [];
+  const notes: string[] = [];
+
+  const track = (relative: string, content: string | null) => {
+    if (content === null) filesMissing.push(relative);
+    else filesInspected.push(relative);
+    return content;
+  };
+
+  const packageJsonRaw = track('package.json', await readIfPresent(projectRoot, 'package.json'));
+
+  if (!packageJsonRaw) {
+    return {
+      projectName: 'unknown',
+      projectRoot,
+      timestamp,
+      analyzable: false,
+      filesInspected,
+      filesMissing,
+      healthScore: null,
+      findingsCount: 0,
+      findings: [],
+      notes: [
+        'No package.json was found at the working directory, so no static analysis ran.',
+        'This is expected when the app serves from a standalone build that does not ship its own source tree.',
+      ],
+    };
+  }
+
+  const packageJson = (parseJsonc(packageJsonRaw) ?? {}) as {
+    name?: string;
+    engines?: { node?: string };
+  };
+  const projectName = packageJson.name ?? path.basename(projectRoot);
+
+  const dockerfile = track('Dockerfile', await readIfPresent(projectRoot, 'Dockerfile'));
+  if (dockerfile) {
+    findings.push(...inspectDockerfile(dockerfile));
+  } else {
+    notes.push('No Dockerfile found, so container checks were skipped.');
+  }
+
+  const tsconfigRaw = track('tsconfig.json', await readIfPresent(projectRoot, 'tsconfig.json'));
+  if (tsconfigRaw) {
+    const tsconfig = parseJsonc(tsconfigRaw) as { compilerOptions?: { strict?: boolean } } | null;
+    const strict = tsconfig?.compilerOptions?.strict;
+    if (strict !== true) {
+      findings.push({
+        id: 'ts-strict-off',
+        category: 'TypeScript',
+        title: 'TypeScript strict mode is disabled',
+        description:
+          'compilerOptions.strict is not set to true, so null checks and implicit any are not enforced.',
+        impact: 'Medium',
+        recommendation: 'Set "strict": true in tsconfig.json and fix the errors it surfaces.',
+        autoFixAvailable: false,
+        evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
+        source: 'tsconfig.json',
+      });
+    }
+  }
+
+  const lockfile = track('package-lock.json', await readIfPresent(projectRoot, 'package-lock.json'));
+  if (!lockfile) {
+    findings.push({
+      id: 'deps-no-lockfile',
+      category: 'Dependencies',
+      title: 'No package-lock.json committed',
+      description:
+        'Without a lockfile, two installs of the same commit can resolve to different dependency versions.',
+      impact: 'High',
+      recommendation: 'Commit package-lock.json and install with npm ci.',
+      autoFixAvailable: false,
+      evidence: 'package-lock.json not found',
+      source: 'package.json',
+    });
+  }
+
+  if (!packageJson.engines?.node) {
+    findings.push({
+      id: 'deps-no-engines',
+      category: 'Dependencies',
+      title: 'Node version is not pinned',
+      description:
+        'package.json does not declare engines.node, so local, CI and production can silently run different runtimes.',
+      impact: 'Low',
+      recommendation: 'Declare the supported Node range under "engines" in package.json.',
+      autoFixAvailable: false,
+      evidence: 'no "engines" field',
+      source: 'package.json',
+    });
+  }
+
+  const gitignore = track('.gitignore', await readIfPresent(projectRoot, '.gitignore'));
+  const ignoresEnv = !!gitignore && /^\s*\.env/m.test(gitignore);
+  for (const envFile of ['.env', '.env.local', '.env.production']) {
+    const present = await readIfPresent(projectRoot, envFile);
+    if (present !== null && !ignoresEnv) {
+      findings.push({
+        id: `security-env-exposed-${envFile}`,
+        category: 'Security',
+        title: `${envFile} is present and not covered by .gitignore`,
+        description: 'A secrets file that git does not ignore can be committed and published by accident.',
+        impact: 'High',
+        recommendation: `Add ${envFile} to .gitignore and rotate any credential that was already committed.`,
+        autoFixAvailable: false,
+        evidence: `${envFile} exists and .gitignore has no matching .env rule`,
+        source: '.gitignore',
+      });
+    }
+  }
+
+  const penalty = findings.reduce((sum, finding) => sum + IMPACT_PENALTY[finding.impact], 0);
 
   return {
-    projectName: 'garopaba-imoveis-starter (OmniRouter)',
-    timestamp: new Date().toISOString(),
-    healthScore: 84,
+    projectName,
+    projectRoot,
+    timestamp,
+    analyzable: true,
+    filesInspected,
+    filesMissing,
+    healthScore: Math.max(0, Math.min(100, 100 - penalty)),
     findingsCount: findings.length,
-    findings
+    findings,
+    notes,
   };
 }

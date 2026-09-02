@@ -1,56 +1,55 @@
-import { CloudResourceAnomaly } from './cloud-analyzer';
+import type { CloudResourceAnomaly } from './cloud-analyzer';
 
-export interface AgentTaskExecution {
-  taskId: string;
-  anomalyId: string;
-  status: 'running' | 'completed' | 'failed';
-  steps: {
-    name: string;
-    description: string;
-    status: 'success' | 'pending' | 'running';
-    output?: string;
-  }[];
-  generatedPRUrl?: string;
-  savingsSecuredUSD: number;
+export interface RemediationStep {
+  name: string;
+  description: string;
+  /** Every step is 'planned'. Nothing here runs against a real account. */
+  status: 'planned';
 }
 
-export function executeRemediationAgent(anomaly: CloudResourceAnomaly): AgentTaskExecution {
-  const taskId = `task-${Math.random().toString(36).substring(2, 9)}`;
+export interface RemediationPlan {
+  anomalyId: string;
+  executed: false;
+  reason: string;
+  estimatedMonthlySavingsUSD: number;
+  steps: RemediationStep[];
+}
 
-  // Simulated autonomous agent workflow execution steps
-  const steps = [
-    {
-      name: 'Adversarial Code & Config Audit',
-      description: `Analyzing Terraform / CDK definitions for ${anomaly.resourceName}`,
-      status: 'success' as const,
-      output: 'Successfully parsed infrastructure graph.'
-    },
-    {
-      name: 'Safety & Regression Check',
-      description: 'Verifying dependency graph to ensure down-scaling will not breach SLA or cause downtime.',
-      status: 'success' as const,
-      output: 'SLA risk score: 0.02% (Safe to proceed).'
-    },
-    {
-      name: 'Terraform Patch / Config Generation',
-      description: `Drafting patch: ${anomaly.recommendedAction}`,
-      status: 'success' as const,
-      output: 'Generated git patch successfully.'
-    },
-    {
-      name: 'Autonomous Pull Request Creation',
-      description: 'Opening PR on GitHub with detailed cost impact breakdown.',
-      status: 'success' as const,
-      output: `PR opened: https://github.com/org/infrastructure/pull/408`
-    }
-  ];
-
+/**
+ * Describes the work a remediation would involve for a given anomaly.
+ *
+ * It does not execute anything, and deliberately reports no pull request and no
+ * secured savings: the anomalies it receives are sample data, and there is no
+ * cloud account, Terraform state or CI pipeline connected to act on.
+ */
+export function planRemediation(anomaly: CloudResourceAnomaly): RemediationPlan {
   return {
-    taskId,
     anomalyId: anomaly.id,
-    status: 'completed',
-    steps,
-    generatedPRUrl: 'https://github.com/org/infrastructure/pull/408',
-    savingsSecuredUSD: anomaly.potentialMonthlySavingsUSD
+    executed: false,
+    reason:
+      'No cloud account is connected, and this anomaly comes from the sample dataset, so nothing was changed.',
+    estimatedMonthlySavingsUSD: anomaly.potentialMonthlySavingsUSD,
+    steps: [
+      {
+        name: 'Locate the resource definition',
+        description: `Find ${anomaly.resourceName} in the Terraform or CDK sources that own it.`,
+        status: 'planned',
+      },
+      {
+        name: 'Check blast radius',
+        description: 'Identify dependents and confirm the change cannot breach an SLA.',
+        status: 'planned',
+      },
+      {
+        name: 'Draft the change',
+        description: anomaly.recommendedAction,
+        status: 'planned',
+      },
+      {
+        name: 'Open a pull request for review',
+        description: 'Submit the change with its cost impact for a human to approve.',
+        status: 'planned',
+      },
+    ],
   };
 }

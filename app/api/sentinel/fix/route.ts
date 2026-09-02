@@ -1,25 +1,30 @@
 import { NextResponse } from 'next/server';
 import { analyzeCloudInfrastructure } from '@/lib/cloud-analyzer';
-import { executeRemediationAgent } from '@/lib/agent-orchestrator';
+import { planRemediation } from '@/lib/agent-orchestrator';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
     const { anomalyId } = await request.json();
-    const report = analyzeCloudInfrastructure(true);
-    const anomaly = report.anomalies.find((a) => a.id === anomalyId);
+    const report = analyzeCloudInfrastructure();
+    const anomaly = report.anomalies.find((item) => item.id === anomalyId);
 
     if (!anomaly) {
       return NextResponse.json({ success: false, error: 'Anomaly not found' }, { status: 404 });
     }
 
-    const taskResult = executeRemediationAgent(anomaly);
-
     return NextResponse.json({
       success: true,
-      message: `Autonomous agent successfully fixed anomaly ${anomalyId}`,
-      taskResult
+      executed: false,
+      mode: 'sample',
+      notice: report.notice,
+      plan: planRemediation(anomaly),
     });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: (error as Error).message },
+      { status: 500 },
+    );
   }
 }
