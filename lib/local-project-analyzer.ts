@@ -384,6 +384,36 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     }
   }
 
+  // A Next standalone image ships a generated package.json next to server.js,
+  // with no lockfile or config beside them. Auditing that would report "no
+  // lockfile committed" about a container's runtime directory: technically
+  // true, entirely misleading. The pair — an entrypoint with none of the files
+  // a checkout carries — is what identifies a runtime rather than a source
+  // tree, and a real project missing its lockfile is still reported.
+  const carriesProjectFile = filesInspected.some((file) =>
+    [...LOCKFILES, 'Dockerfile', 'tsconfig.json', '.gitignore'].includes(file),
+  );
+  const hasStandaloneEntrypoint = (await source.read('server.js')) !== null;
+
+  if (hasStandaloneEntrypoint && !carriesProjectFile) {
+    return {
+      projectName,
+      origin: source.origin,
+      timestamp,
+      analyzable: false,
+      filesInspected,
+      filesMissing,
+      filesUnreadable,
+      healthScore: null,
+      findingsCount: 0,
+      findings: [],
+      notes: [
+        `${source.origin} holds a server.js and a package.json, with none of the files a checkout carries, so it is a deployed runtime rather than a source tree.`,
+        'Point the audit at a repository instead.',
+      ],
+    };
+  }
+
   const penalty = findings.reduce((sum, finding) => sum + IMPACT_PENALTY[finding.impact], 0);
 
   return {
