@@ -7,15 +7,37 @@ import type { SecurityScanResult } from "@/lib/security-scanner";
 
 type Tab = "local" | "cloud" | "security" | "saas" | "fleet";
 
-function SampleBanner({ notice }: { notice: string }) {
+/**
+ * The palette is deliberately almost colourless. This tool's only claim is that
+ * what it shows was measured, and a dashboard that shouts reads like a demo.
+ * One warm hue is reserved for two meanings and nothing else: a high-impact
+ * finding, and data that was not measured.
+ */
+const THEME = {
+  "--ground": "#0b0e11",
+  "--panel": "#12161a",
+  "--line": "#1f262c",
+  "--line-soft": "#171d22",
+  "--ink": "#e6eaed",
+  "--ink-dim": "#8a959d",
+  "--ink-faint": "#5b666e",
+  "--flag": "#c8763e",
+  "--ok": "#7c9c88",
+} as React.CSSProperties;
+
+function NotMeasured({ notice }: { notice: string }) {
   return (
-    <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-5 py-4">
-      <div className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400">
-        Sample data — not measured
+    <div className="mb-10 border-l-2 border-[var(--flag)] pl-5 py-1">
+      <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--flag)]">
+        Not measured
       </div>
-      <p className="mt-2 text-sm text-amber-200/80">{notice}</p>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">{notice}</p>
     </div>
   );
+}
+
+function Rule() {
+  return <div className="h-px bg-[var(--line)]" />;
 }
 
 export function SentinelDashboard() {
@@ -31,9 +53,7 @@ export function SentinelDashboard() {
   const [sweepingId, setSweepingId] = useState<string | null>(null);
   const [successLogs, setSuccessLogs] = useState<Record<string, string>>({});
   const [orgData, setOrgData] = useState<any>(null);
-  const [terminalLogs, setTerminalLogs] = useState<string[]>([
-    "[INIT] Sentinel audit agent ready.",
-  ]);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
   // When set, every tab describes this repository instead of the server's own
@@ -41,7 +61,7 @@ export function SentinelDashboard() {
   const [auditTarget, setAuditTarget] = useState<{ owner: string; repo: string } | null>(null);
 
   const log = useCallback((line: string) => {
-    setTerminalLogs((prev) => [line, ...prev].slice(0, 60));
+    setTerminalLogs((prev) => [line, ...prev].slice(0, 40));
   }, []);
 
   const fetchFixes = useCallback(async () => {
@@ -50,7 +70,7 @@ export function SentinelDashboard() {
       const data = await res.json();
       if (data.success) setSuccessLogs(data.fixes);
     } catch {
-      log("[ERROR] Could not read the applied-fix history.");
+      log("Could not read the pull request history.");
     }
   }, [log]);
 
@@ -63,7 +83,7 @@ export function SentinelDashboard() {
         setSaasNotice(data.notice ?? "");
       }
     } catch {
-      log("[ERROR] Could not read organization data.");
+      log("Could not read organization data.");
     }
   }, [log]);
 
@@ -76,7 +96,7 @@ export function SentinelDashboard() {
         setFleetNotice(data.notice ?? "");
       }
     } catch {
-      log("[ERROR] Could not read fleet data.");
+      log("Could not read fleet data.");
     }
   }, [log]);
 
@@ -92,7 +112,7 @@ export function SentinelDashboard() {
       } else if (auditTarget) {
         // One request feeds both the audit and the advisory tab, so switching
         // between them cannot replace the repository with this project.
-        log(`[AUDIT] Reading github.com/${auditTarget.owner}/${auditTarget.repo}...`);
+        log(`Reading github.com/${auditTarget.owner}/${auditTarget.repo}`);
         const res = await fetch("/api/sentinel/audit-repo", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -102,7 +122,7 @@ export function SentinelDashboard() {
 
         if (!data.success) {
           setRepoError(data.error ?? "The repository could not be audited.");
-          log(`[AUDIT] Failed: ${data.error}`);
+          log(data.error ?? "The repository could not be audited.");
           setAuditTarget(null);
           return;
         }
@@ -111,21 +131,18 @@ export function SentinelDashboard() {
         setScan(data.scan);
         log(
           data.report.analyzable
-            ? `[AUDIT] ${data.report.findingsCount} finding(s) from ${data.report.filesInspected.length} file(s) in ${data.report.origin}.`
-            : `[AUDIT] Could not analyze ${data.report.origin}.`,
+            ? `${data.report.findingsCount} finding(s) in ${data.report.origin}`
+            : `Could not analyze ${data.report.origin}`,
         );
       } else if (activeTab === "security") {
-        log("[SCAN] Querying the npm advisory database for the installed dependency tree...");
         const res = await fetch("/api/sentinel/security");
         const data = await res.json();
         setScan(data.result);
-        if (data.result?.ok) {
-          log(
-            `[SCAN] ${data.result.packagesScanned} packages checked, ${data.result.vulnerabilities.length} advisories returned.`,
-          );
-        } else {
-          log(`[SCAN] Scan unavailable: ${data.result?.error ?? "unknown error"}`);
-        }
+        log(
+          data.result?.ok
+            ? `${data.result.packagesScanned} packages checked against the npm advisory database`
+            : `Advisory scan unavailable: ${data.result?.error ?? "unknown error"}`,
+        );
       } else {
         const res = await fetch("/api/sentinel/local-audit");
         const data = await res.json();
@@ -133,13 +150,13 @@ export function SentinelDashboard() {
           setLocalReport(data.report);
           log(
             data.report.analyzable
-              ? `[AUDIT] Inspected ${data.report.filesInspected.length} file(s): ${data.report.filesInspected.join(", ")}.`
-              : "[AUDIT] Source tree not reachable from the running process; nothing was analyzed.",
+              ? `Read ${data.report.filesInspected.length} file(s) in ${data.report.origin}`
+              : "No source tree reachable from the running process",
           );
         }
       }
     } catch {
-      log("[ERROR] Request failed.");
+      log("Request failed.");
     } finally {
       setLoading(false);
     }
@@ -161,10 +178,10 @@ export function SentinelDashboard() {
       const data = await res.json();
       if (data.success) {
         setOrgData(data.organization);
-        log(`[SAMPLE] Tier switched to ${tier} in memory only.`);
+        log(`Tier set to ${tier} in memory only.`);
       }
     } catch {
-      log("[ERROR] Tier change failed.");
+      log("Tier change failed.");
     }
   }
 
@@ -179,10 +196,10 @@ export function SentinelDashboard() {
       const data = await res.json();
       if (data.success) {
         setServices(data.services);
-        log(`[SAMPLE] Reset the sample record for ${name}. No service was contacted.`);
+        log(`Reset the sample record for ${name}. No service was contacted.`);
       }
     } catch {
-      log(`[ERROR] Could not update ${name}.`);
+      log(`Could not update ${name}.`);
     } finally {
       setSweepingId(null);
     }
@@ -212,7 +229,7 @@ export function SentinelDashboard() {
 
   async function handleAutoFix(id: string) {
     setFixingId(id);
-    log(`[AGENT] Preparing a pull request for ${id}...`);
+    log(`Preparing a pull request for ${id}`);
     try {
       const res = await fetch("/api/sentinel/local-fix", {
         method: "POST",
@@ -222,75 +239,72 @@ export function SentinelDashboard() {
       const data = await res.json();
       if (data.success) {
         setSuccessLogs(data.fixes);
-        log(`[SUCCESS] Pull request opened: ${data.prUrl}`);
+        log(`Pull request opened: ${data.prUrl}`);
       } else {
-        log(`[BLOCKED] ${data.error}`);
+        log(data.error);
       }
     } catch {
-      log(`[ERROR] Request failed for ${id}.`);
+      log(`Request failed for ${id}.`);
     } finally {
       setFixingId(null);
     }
   }
 
-  const severityClass: Record<string, string> = {
-    Critical: "bg-red-500/10 text-red-400 border-red-500/30",
-    High: "bg-red-500/10 text-red-400 border-red-500/30",
-    Moderate: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    Low: "bg-slate-500/10 text-slate-300 border-slate-500/30",
-  };
-
-  const tabs: Array<{ id: Tab; label: string }> = [
-    { id: "local", label: "Local Audit" },
-    { id: "security", label: "CVE Security" },
-    { id: "fleet", label: "Fleet" },
-    { id: "saas", label: "SaaS Org" },
-    { id: "cloud", label: "Cloud AWS" },
+  const tabs: Array<{ id: Tab; label: string; sample?: boolean }> = [
+    { id: "local", label: "findings" },
+    { id: "security", label: "advisories" },
+    { id: "fleet", label: "fleet", sample: true },
+    { id: "saas", label: "organization", sample: true },
+    { id: "cloud", label: "cloud", sample: true },
   ];
 
+  const isHeavy = (level: string) => level === "High" || level === "Critical";
+
   return (
-    <div className="min-h-screen bg-[#07090e] text-[#f8fafc] p-6 md:p-10 font-sans">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 pb-6 border-b border-sky-500/20 gap-4">
-          <div>
-            <div className="flex items-center gap-3">
-              <span className="px-3 py-1 rounded-full bg-sky-500/10 text-sky-400 text-xs font-mono border border-sky-500/35">
-                STATIC AUDIT AGENT — NO CLOUD CREDENTIALS REQUIRED
-              </span>
-              <img src="/api/sentinel/badge" alt="Sentinel health badge" className="h-5" />
-            </div>
-            <h1 className="text-3xl md:text-4xl font-extrabold mt-2 tracking-tight">
-              Sentinel <span className="text-sky-400">Code &amp; DevOps Optimizer</span>
-            </h1>
+    <div
+      style={THEME}
+      className="relative min-h-dvh bg-[var(--ground)] text-[var(--ink)] font-sans antialiased selection:bg-[var(--ink)] selection:text-[var(--ground)]"
+    >
+      {/* globals.css paints the body in the light palette that belongs to the
+          other product in this repo, which would show through on short pages
+          and when overscrolling. */}
+      <div aria-hidden className="fixed inset-0 -z-10 bg-[var(--ground)]" />
+
+      <div className="mx-auto w-full max-w-5xl px-6 py-12 md:px-10 md:py-16">
+        <header className="flex flex-col gap-8 sm:flex-row sm:items-baseline sm:justify-between">
+          <div className="flex items-baseline gap-4">
+            <span className="font-mono text-sm lowercase tracking-[0.42em] text-[var(--ink)]">
+              sentinel
+            </span>
+            <img src="/api/sentinel/badge" alt="Repository health badge" className="h-5 opacity-70" />
           </div>
 
-          <div className="flex flex-wrap gap-2 bg-slate-900/80 p-1 rounded-xl border border-sky-500/20">
+          <nav className="flex flex-wrap gap-x-6 gap-y-2">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-3 py-2 rounded-lg text-xs font-mono font-bold transition cursor-pointer ${
+                className={`font-mono text-xs tracking-wide transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-4 focus-visible:outline-[var(--ink)] ${
                   activeTab === tab.id
-                    ? "bg-sky-500 text-slate-950 shadow-lg shadow-sky-500/20"
-                    : "text-slate-400 hover:text-white"
+                    ? "text-[var(--ink)] underline decoration-[var(--flag)] decoration-1 underline-offset-8"
+                    : "text-[var(--ink-faint)] hover:text-[var(--ink-dim)]"
                 }`}
               >
                 {tab.label}
+                {tab.sample && <span className="ml-1 text-[var(--flag)]">*</span>}
               </button>
             ))}
-          </div>
-        </div>
+          </nav>
+        </header>
 
-        {activeTab === "local" && (
-          <div>
-            <div className="mb-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-              <label
-                htmlFor="repo-input"
-                className="block text-xs font-mono uppercase tracking-wider text-slate-400 mb-3"
-              >
-                Audit any public GitHub repository
-              </label>
-              <div className="flex flex-col sm:flex-row gap-3">
+        <div className="mt-16">
+          {activeTab === "local" && (
+            <section>
+              <h1 className="max-w-xl text-2xl font-normal leading-snug tracking-tight md:text-3xl">
+                Point it at a repository. It reads the files and reports only what it found.
+              </h1>
+
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <input
                   id="repo-input"
                   value={repoInput}
@@ -299,417 +313,376 @@ export function SentinelDashboard() {
                     if (event.key === "Enter") handleAuditRepo();
                   }}
                   placeholder="owner/repo"
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-mono text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-sky-500/60"
+                  aria-label="Public GitHub repository"
+                  className="w-full flex-1 border-b border-[var(--line)] bg-transparent pb-2 font-mono text-base text-[var(--ink)] placeholder:text-[var(--ink-faint)] focus:border-[var(--ink-dim)] focus:outline-none sm:max-w-sm"
                 />
-                <button
-                  onClick={handleAuditRepo}
-                  disabled={loading}
-                  className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs transition disabled:opacity-50 cursor-pointer whitespace-nowrap"
-                >
-                  {loading ? "Reading..." : "Run audit"}
-                </button>
-                <button
-                  onClick={handleAuditThisProject}
-                  className="px-5 py-2.5 rounded-xl border border-slate-700 text-slate-300 font-mono text-xs hover:border-slate-500 transition cursor-pointer whitespace-nowrap"
-                >
-                  This project
-                </button>
-              </div>
-              {repoError && <p className="mt-3 text-sm text-red-400">{repoError}</p>}
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-              <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
-                <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
-                  Project health score
-                </div>
-                <div className="text-3xl font-extrabold text-emerald-400 font-mono">
-                  {!localReport || localReport.healthScore === null
-                    ? "—"
-                    : `${localReport.healthScore} / 100`}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">100 minus a penalty per finding</div>
-              </div>
-
-              <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
-                <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
-                  Detected findings
-                </div>
-                <div className="text-3xl font-extrabold text-sky-400 font-mono">
-                  {localReport ? localReport.findingsCount : "—"}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  {localReport?.filesInspected.length
-                    ? `From ${localReport.filesInspected.length} file(s) read on disk`
-                    : "Awaiting scan"}
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleAuditRepo}
+                    disabled={loading}
+                    className="border border-[var(--ink)] px-5 py-2 font-mono text-xs text-[var(--ink)] transition-colors hover:bg-[var(--ink)] hover:text-[var(--ground)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+                  >
+                    {loading ? "reading" : "audit"}
+                  </button>
+                  <button
+                    onClick={handleAuditThisProject}
+                    className="px-2 py-2 font-mono text-xs text-[var(--ink-faint)] transition-colors hover:text-[var(--ink-dim)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+                  >
+                    this project
+                  </button>
                 </div>
               </div>
 
-              <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
-                <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
-                  Source
-                </div>
-                <div className="text-2xl font-extrabold text-sky-300 font-mono truncate">
-                  {localReport?.projectName ?? "—"}
-                </div>
-                <div className="text-xs text-slate-500 mt-1 truncate">
-                  {localReport?.origin ?? ""}
-                </div>
-              </div>
-            </div>
+              {repoError && (
+                <p className="mt-4 font-mono text-xs text-[var(--flag)]">{repoError}</p>
+              )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 space-y-4">
-                <h2 className="text-xl font-bold mb-4">Local codebase &amp; Docker audit</h2>
+              {localReport && (
+                <p className="mt-14 font-mono text-xs leading-relaxed text-[var(--ink-dim)]">
+                  <span className="text-[var(--ink)]">{localReport.origin}</span>
+                  {localReport.analyzable && (
+                    <>
+                      {" · "}
+                      {localReport.findingsCount === 0
+                        ? "no findings"
+                        : `${localReport.findingsCount} finding${localReport.findingsCount === 1 ? "" : "s"}`}
+                      {" · "}
+                      {localReport.filesInspected.length} file
+                      {localReport.filesInspected.length === 1 ? "" : "s"} read
+                      {localReport.healthScore !== null && <> · health {localReport.healthScore}</>}
+                    </>
+                  )}
+                  {localReport.filesUnreadable.length > 0 && (
+                    <span className="text-[var(--flag)]">
+                      {" · "}
+                      {localReport.filesUnreadable.length} unreadable
+                    </span>
+                  )}
+                </p>
+              )}
+
+              <div className="mt-6">
                 {loading ? (
-                  <div className="text-center py-20 text-slate-400 font-mono">
-                    Reading project files...
-                  </div>
+                  <p className="py-16 font-mono text-xs text-[var(--ink-faint)]">reading files…</p>
                 ) : localReport && !localReport.analyzable ? (
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 text-sm space-y-2">
-                    <div className="font-bold text-slate-100">Nothing to report</div>
+                  <div className="border-t border-[var(--line)] pt-6">
+                    <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--flag)]">
+                      Nothing measured
+                    </p>
                     {localReport.notes.map((note) => (
-                      <p key={note} className="text-slate-400">
+                      <p key={note} className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
                         {note}
                       </p>
                     ))}
                   </div>
                 ) : localReport && localReport.findings.length === 0 ? (
-                  <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-6 text-sm text-emerald-200">
-                    No findings. Every check this agent knows how to run passed.
+                  <div className="border-t border-[var(--line)] pt-6">
+                    <p className="text-sm text-[var(--ok)]">
+                      Every check passed: Docker, TypeScript, lockfile and exposed secrets.
+                    </p>
+                    {localReport.notes.map((note) => (
+                      <p key={note} className="mt-3 text-sm text-[var(--ink-faint)]">
+                        {note}
+                      </p>
+                    ))}
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div>
                     {localReport?.findings.map((finding) => {
                       const prUrl = successLogs[finding.id];
-                      const isFixing = fixingId === finding.id;
+                      const heavy = isHeavy(finding.impact);
 
                       return (
-                        <div
-                          key={finding.id}
-                          className="bg-slate-900/80 border border-slate-800 hover:border-sky-500/40 rounded-2xl p-6 transition flex flex-col justify-between gap-4"
-                        >
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-3 flex-wrap">
-                              <span className="px-2.5 py-0.5 rounded text-xs font-mono bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                                {finding.category}
-                              </span>
+                        <article key={finding.id} className="border-t border-[var(--line)] py-8">
+                          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+                            <div className="flex items-baseline gap-4">
                               <span
-                                className={`px-2.5 py-0.5 rounded text-xs font-mono uppercase font-bold border ${
-                                  finding.impact === "High"
-                                    ? "bg-red-500/10 text-red-400 border-red-500/30"
-                                    : finding.impact === "Medium"
-                                      ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
-                                      : "bg-slate-500/10 text-slate-300 border-slate-500/30"
+                                className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
+                                  heavy ? "text-[var(--flag)]" : "text-[var(--ink-faint)]"
                                 }`}
                               >
-                                Impact: {finding.impact}
+                                {finding.impact}
                               </span>
-                              <span className="text-[11px] font-mono text-slate-500">
-                                {finding.source}
+                              <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+                                {finding.category}
                               </span>
                             </div>
-
-                            <div className="font-semibold text-lg text-slate-100">
-                              {finding.title}
-                            </div>
-
-                            <p className="text-sm text-slate-400">{finding.description}</p>
-
-                            <div className="text-xs font-mono text-slate-300 bg-slate-950/60 px-3 py-2 rounded-lg border border-slate-800 break-words">
-                              Observed: {finding.evidence}
-                            </div>
-
-                            <div className="text-xs font-mono text-sky-300 bg-sky-950/30 px-3 py-1.5 rounded-lg border border-sky-500/20 inline-block">
-                              Recommendation: {finding.recommendation}
-                            </div>
+                            <span className="font-mono text-[11px] text-[var(--ink-faint)]">
+                              {finding.source}
+                            </span>
                           </div>
 
-                          <div className="flex justify-end pt-2 border-t border-slate-800">
+                          <h2 className="mt-4 text-lg font-normal tracking-tight text-[var(--ink)]">
+                            {finding.title}
+                          </h2>
+
+                          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+                            {finding.description}
+                          </p>
+
+                          <p className="mt-5 border-l border-[var(--line)] pl-4 font-mono text-xs leading-relaxed text-[var(--ink-dim)]">
+                            <span className="text-[var(--ink-faint)]">observed </span>
+                            <span className="text-[var(--ink)]">{finding.evidence}</span>
+                          </p>
+
+                          <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+                            <p className="max-w-xl text-sm text-[var(--ink-dim)]">
+                              {finding.recommendation}
+                            </p>
                             {prUrl ? (
                               <a
                                 href={prUrl}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="px-4 py-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-mono font-bold hover:bg-emerald-500/20 transition"
+                                className="font-mono text-xs text-[var(--ok)] underline decoration-1 underline-offset-4"
                               >
-                                Pull request opened (view)
+                                view pull request
                               </a>
                             ) : (
                               <button
                                 onClick={() => handleAutoFix(finding.id)}
-                                disabled={isFixing}
-                                className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs transition shadow-md shadow-sky-500/20 disabled:opacity-50 cursor-pointer"
+                                disabled={fixingId === finding.id}
+                                className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
                               >
-                                {isFixing ? "Opening..." : "Open pull request"}
+                                {fixingId === finding.id ? "opening" : "open pull request"}
                               </button>
                             )}
                           </div>
-                        </div>
+                        </article>
                       );
                     })}
+                    <Rule />
                   </div>
                 )}
               </div>
+            </section>
+          )}
 
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col h-[500px]">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
-                  <div className="text-xs font-mono text-slate-400 flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                    Agent log
-                  </div>
-                </div>
-                <div className="flex-1 overflow-y-auto font-mono text-xs text-sky-400 space-y-2 bg-slate-900/40 p-3 rounded-xl border border-slate-900">
-                  {terminalLogs.map((line, idx) => (
-                    <div key={idx} className="leading-relaxed break-words">
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+          {activeTab === "security" && (
+            <section>
+              <h1 className="max-w-xl text-2xl font-normal leading-snug tracking-tight md:text-3xl">
+                Known advisories for the versions this project actually installs.
+              </h1>
+              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+                Versions come from the lockfile and are checked against the public npm advisory
+                database.
+              </p>
 
-        {activeTab === "security" && (
-          <div className="space-y-6">
-            <h2 className="text-xl font-bold">Dependency vulnerability scan</h2>
-            <p className="text-sm text-slate-400">
-              Queries the public npm advisory database with the versions resolved in this
-              project&apos;s package-lock.json.
-            </p>
-
-            {loading ? (
-              <div className="text-center py-20 text-slate-400 font-mono">Querying advisories...</div>
-            ) : !scan ? null : !scan.ok ? (
-              <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-6">
-                <div className="font-bold text-slate-100 mb-1">Scan unavailable</div>
-                <p className="text-sm text-slate-400">{scan.error}</p>
-              </div>
-            ) : (
-              <>
-                <div className="text-xs font-mono text-slate-400">
-                  {scan.packagesScanned} packages checked · {new Date(scan.scannedAt).toLocaleString()}
-                </div>
-                {scan.vulnerabilities.length === 0 ? (
-                  <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-6 text-sm text-emerald-200">
-                    No known advisories for the installed dependency tree.
+              <div className="mt-14">
+                {loading ? (
+                  <p className="py-16 font-mono text-xs text-[var(--ink-faint)]">
+                    querying advisories…
+                  </p>
+                ) : !scan ? null : !scan.ok ? (
+                  <div className="border-t border-[var(--line)] pt-6">
+                    <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--flag)]">
+                      Scan unavailable
+                    </p>
+                    <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+                      {scan.error}
+                    </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {scan.vulnerabilities.map((vuln) => (
-                      <div
-                        key={vuln.id}
-                        className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6"
-                      >
-                        <div className="flex items-center justify-between mb-4 gap-3">
-                          <span
-                            className={`px-2.5 py-0.5 rounded text-xs font-mono border ${
-                              severityClass[vuln.severity] ?? severityClass.Low
-                            }`}
-                          >
-                            {vuln.severity}
-                          </span>
-                          {vuln.cveId && (
-                            <span className="text-xs font-mono text-slate-400">{vuln.cveId}</span>
-                          )}
+                  <>
+                    <p className="font-mono text-xs text-[var(--ink-dim)]">
+                      {scan.packagesScanned} packages checked ·{" "}
+                      {new Date(scan.scannedAt).toLocaleString()}
+                    </p>
+
+                    <div className="mt-6">
+                      {scan.vulnerabilities.length === 0 ? (
+                        <div className="border-t border-[var(--line)] pt-6">
+                          <p className="text-sm text-[var(--ok)]">
+                            No known advisories for this dependency tree.
+                          </p>
                         </div>
-                        <h3 className="text-base font-bold mb-2">{vuln.title}</h3>
-                        <div className="text-xs font-mono text-slate-400 space-y-1">
-                          <div>
-                            Package: <span className="text-slate-200">{vuln.packageName}</span>
-                          </div>
-                          <div>Installed: {vuln.installedVersion}</div>
-                          <div>Vulnerable range: {vuln.vulnerableVersions}</div>
-                        </div>
-                        {vuln.advisoryUrl && (
-                          <a
-                            href={vuln.advisoryUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-4 inline-block text-xs font-mono text-sky-400 hover:text-sky-300"
-                          >
-                            Read the advisory
-                          </a>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                      ) : (
+                        <>
+                          {scan.vulnerabilities.map((vuln) => (
+                            <article key={vuln.id} className="border-t border-[var(--line)] py-8">
+                              <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+                                <span
+                                  className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
+                                    isHeavy(vuln.severity)
+                                      ? "text-[var(--flag)]"
+                                      : "text-[var(--ink-faint)]"
+                                  }`}
+                                >
+                                  {vuln.severity}
+                                </span>
+                                {vuln.cveId && (
+                                  <span className="font-mono text-[11px] text-[var(--ink-faint)]">
+                                    {vuln.cveId}
+                                  </span>
+                                )}
+                              </div>
+
+                              <h2 className="mt-4 max-w-2xl text-lg font-normal tracking-tight">
+                                {vuln.title}
+                              </h2>
+
+                              <dl className="mt-4 grid gap-1 font-mono text-xs text-[var(--ink-dim)] sm:grid-cols-[7rem_1fr]">
+                                <dt className="text-[var(--ink-faint)]">package</dt>
+                                <dd className="text-[var(--ink)]">{vuln.packageName}</dd>
+                                <dt className="text-[var(--ink-faint)]">installed</dt>
+                                <dd>{vuln.installedVersion}</dd>
+                                <dt className="text-[var(--ink-faint)]">vulnerable</dt>
+                                <dd>{vuln.vulnerableVersions}</dd>
+                              </dl>
+
+                              {vuln.advisoryUrl && (
+                                <a
+                                  href={vuln.advisoryUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-5 inline-block font-mono text-xs text-[var(--ink-dim)] underline decoration-1 underline-offset-4 hover:text-[var(--ink)]"
+                                >
+                                  read the advisory
+                                </a>
+                              )}
+                            </article>
+                          ))}
+                          <Rule />
+                        </>
+                      )}
+                    </div>
+                  </>
                 )}
-              </>
-            )}
-          </div>
-        )}
+              </div>
+            </section>
+          )}
 
-        {activeTab === "fleet" && (
-          <div className="space-y-6">
-            {fleetNotice && <SampleBanner notice={fleetNotice} />}
-            <h2 className="text-xl font-bold">Fleet supervisor</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {services.map((svc) => {
-                const isSweeping = sweepingId === svc.id;
-                return (
-                  <div
+          {activeTab === "fleet" && (
+            <section>
+              {fleetNotice && <NotMeasured notice={fleetNotice} />}
+              <h1 className="text-2xl font-normal tracking-tight md:text-3xl">Fleet</h1>
+
+              <div className="mt-10">
+                {services.map((svc) => (
+                  <article
                     key={svc.id}
-                    className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between gap-4"
-                  >
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="font-mono text-xs px-2.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
-                          PORT: {svc.port}
-                        </span>
-                        <span
-                          className={`px-2.5 py-0.5 rounded text-xs font-mono uppercase font-bold border ${
-                            svc.status === "HEALTHY"
-                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                              : svc.status === "WARNING"
-                                ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
-                                : "bg-red-500/10 text-red-400 border-red-500/30"
-                          }`}
-                        >
-                          {svc.status}
-                        </span>
-                      </div>
-
-                      <h3 className="text-lg font-bold text-slate-100">{svc.name}</h3>
-
-                      <div className="flex justify-between items-center text-xs font-mono text-slate-400">
-                        <span>
-                          Health: <strong className="text-white">{svc.healthScore}/100</strong>
-                        </span>
-                        <span>
-                          Incidents:{" "}
-                          <strong
-                            className={svc.activeIncidents > 0 ? "text-red-400" : "text-emerald-400"}
-                          >
-                            {svc.activeIncidents}
-                          </strong>
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="pt-3 border-t border-slate-800 flex justify-end">
-                      <button
-                        onClick={() => handleRunSweep(svc.id, svc.name)}
-                        disabled={isSweeping}
-                        className="px-4 py-2 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 rounded-xl text-xs font-mono font-bold transition cursor-pointer disabled:opacity-50"
-                      >
-                        {isSweeping ? "Resetting..." : "Reset sample record"}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {activeTab === "saas" && (
-          <div className="space-y-6">
-            {saasNotice && <SampleBanner notice={saasNotice} />}
-            <h2 className="text-xl font-bold">Organization &amp; subscription tier</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 md:col-span-2 space-y-4">
-                <div className="flex justify-between items-center pb-4 border-b border-slate-800">
-                  <span className="text-slate-400">Organization</span>
-                  <span className="font-bold">{orgData?.name ?? "—"}</span>
-                </div>
-                <div className="flex justify-between items-center pb-4 border-b border-slate-800">
-                  <span className="text-slate-400">Tier</span>
-                  <span className="px-3 py-1 rounded-full bg-sky-500/10 text-sky-400 font-mono text-xs border border-sky-500/30">
-                    {orgData?.tier ?? "—"}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center pb-4 border-b border-slate-800">
-                  <span className="text-slate-400">Monthly scan quota</span>
-                  <span className="font-mono">
-                    {orgData ? `${orgData.scansUsed} / ${orgData.monthlyQuota} used` : "—"}
-                  </span>
-                </div>
-                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                  <div
-                    className="bg-sky-500 h-full transition-all"
-                    style={{
-                      width: orgData
-                        ? `${Math.min(100, (orgData.scansUsed / orgData.monthlyQuota) * 100)}%`
-                        : "0%",
-                    }}
-                  ></div>
-                </div>
-              </div>
-
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
-                <div>
-                  <h3 className="font-bold text-sm mb-3">Change tier</h3>
-                  <p className="text-xs text-slate-400 mb-4">
-                    Changes apply to the in-memory sample only. No billing is connected.
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <button
-                    onClick={() => handleUpgradeTier("PRO")}
-                    className="w-full py-2 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 rounded-xl text-xs font-mono font-bold transition cursor-pointer"
-                  >
-                    PRO (500 scans)
-                  </button>
-                  <button
-                    onClick={() => handleUpgradeTier("ENTERPRISE")}
-                    className="w-full py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-mono font-bold transition cursor-pointer"
-                  >
-                    ENTERPRISE (5,000 scans)
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === "cloud" && (
-          <div>
-            {report && <SampleBanner notice={report.notice} />}
-            {report && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
-                <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
-                  <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
-                    Illustrative monthly waste
-                  </div>
-                  <div className="text-3xl font-extrabold text-red-400 font-mono">
-                    ${report.totalMonthlyWasteUSD.toLocaleString()} / mo
-                  </div>
-                </div>
-                <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
-                  <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
-                    Sample anomalies
-                  </div>
-                  <div className="text-3xl font-extrabold text-sky-400 font-mono">
-                    {report.anomaliesCount}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <h2 className="text-xl font-bold mb-6">Cloud cost anomalies</h2>
-            {loading ? (
-              <div className="text-center py-20 text-slate-400 font-mono">Loading...</div>
-            ) : (
-              <div className="space-y-4">
-                {report?.anomalies.map((anomaly) => (
-                  <div
-                    key={anomaly.id}
-                    className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex justify-between items-center gap-4"
+                    className="flex flex-wrap items-baseline justify-between gap-4 border-t border-[var(--line)] py-6"
                   >
                     <div>
-                      <div className="text-lg font-semibold">{anomaly.resourceName}</div>
-                      <div className="text-sm text-slate-400">{anomaly.issue}</div>
+                      <h2 className="font-mono text-sm text-[var(--ink)]">{svc.name}</h2>
+                      <p className="mt-1 font-mono text-xs text-[var(--ink-faint)]">
+                        port {svc.port} · health {svc.healthScore} · {svc.activeIncidents} incident
+                        {svc.activeIncidents === 1 ? "" : "s"}
+                      </p>
                     </div>
-                    <div className="text-right font-mono text-emerald-400 font-bold whitespace-nowrap">
-                      ${anomaly.potentialMonthlySavingsUSD} / mo
+                    <div className="flex items-center gap-6">
+                      <span
+                        className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
+                          svc.status === "HEALTHY" ? "text-[var(--ok)]" : "text-[var(--flag)]"
+                        }`}
+                      >
+                        {svc.status}
+                      </span>
+                      <button
+                        onClick={() => handleRunSweep(svc.id, svc.name)}
+                        disabled={sweepingId === svc.id}
+                        className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] disabled:opacity-40"
+                      >
+                        {sweepingId === svc.id ? "resetting" : "reset sample"}
+                      </button>
                     </div>
-                  </div>
+                  </article>
                 ))}
+                <Rule />
               </div>
-            )}
-          </div>
+            </section>
+          )}
+
+          {activeTab === "saas" && (
+            <section>
+              {saasNotice && <NotMeasured notice={saasNotice} />}
+              <h1 className="text-2xl font-normal tracking-tight md:text-3xl">Organization</h1>
+
+              <dl className="mt-10 max-w-2xl font-mono text-sm">
+                <div className="flex justify-between border-t border-[var(--line)] py-4">
+                  <dt className="text-[var(--ink-faint)]">name</dt>
+                  <dd>{orgData?.name ?? "—"}</dd>
+                </div>
+                <div className="flex justify-between border-t border-[var(--line)] py-4">
+                  <dt className="text-[var(--ink-faint)]">tier</dt>
+                  <dd>{orgData?.tier ?? "—"}</dd>
+                </div>
+                <div className="flex justify-between border-t border-b border-[var(--line)] py-4">
+                  <dt className="text-[var(--ink-faint)]">scans</dt>
+                  <dd>
+                    {orgData ? `${orgData.scansUsed} of ${orgData.monthlyQuota}` : "—"}
+                  </dd>
+                </div>
+              </dl>
+
+              <div className="mt-8 flex gap-3">
+                <button
+                  onClick={() => handleUpgradeTier("PRO")}
+                  className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)]"
+                >
+                  set pro
+                </button>
+                <button
+                  onClick={() => handleUpgradeTier("ENTERPRISE")}
+                  className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)]"
+                >
+                  set enterprise
+                </button>
+              </div>
+            </section>
+          )}
+
+          {activeTab === "cloud" && (
+            <section>
+              {report && <NotMeasured notice={report.notice} />}
+              <h1 className="text-2xl font-normal tracking-tight md:text-3xl">Cloud cost</h1>
+
+              {report && (
+                <p className="mt-4 font-mono text-xs text-[var(--ink-dim)]">
+                  {report.anomaliesCount} illustrative anomalies · $
+                  {report.totalMonthlyWasteUSD.toLocaleString()} per month
+                </p>
+              )}
+
+              <div className="mt-10">
+                {report?.anomalies.map((anomaly) => (
+                  <article
+                    key={anomaly.id}
+                    className="flex flex-wrap items-baseline justify-between gap-4 border-t border-[var(--line)] py-6"
+                  >
+                    <div className="max-w-xl">
+                      <h2 className="font-mono text-sm">{anomaly.resourceName}</h2>
+                      <p className="mt-2 text-sm leading-relaxed text-[var(--ink-dim)]">
+                        {anomaly.issue}
+                      </p>
+                    </div>
+                    <span className="font-mono text-sm text-[var(--ink-faint)]">
+                      ${anomaly.potentialMonthlySavingsUSD}/mo
+                    </span>
+                  </article>
+                ))}
+                <Rule />
+              </div>
+            </section>
+          )}
+        </div>
+
+        {terminalLogs.length > 0 && (
+          <footer className="mt-20 border-t border-[var(--line-soft)] pt-6">
+            <h2 className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+              Activity
+            </h2>
+            <ul className="mt-3 space-y-1.5">
+              {terminalLogs.slice(0, 6).map((line, index) => (
+                <li
+                  key={index}
+                  className="font-mono text-xs leading-relaxed text-[var(--ink-faint)]"
+                >
+                  {line}
+                </li>
+              ))}
+            </ul>
+          </footer>
         )}
       </div>
     </div>
