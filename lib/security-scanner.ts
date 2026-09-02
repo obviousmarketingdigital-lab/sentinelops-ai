@@ -1,5 +1,4 @@
-import fs from 'fs/promises';
-import path from 'path';
+import { createFileSystemSource, type ProjectSource } from './project-source';
 
 const BULK_ADVISORY_ENDPOINT = 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk';
 
@@ -55,14 +54,10 @@ function normalizeSeverity(raw?: string): Vulnerability['severity'] {
  * Keys look like "node_modules/next" or "node_modules/a/node_modules/b".
  */
 async function readInstalledPackages(
-  projectRoot: string,
+  source: ProjectSource,
 ): Promise<{ packages: Record<string, string[]>; count: number } | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(path.join(projectRoot, 'package-lock.json'), 'utf8');
-  } catch {
-    return null;
-  }
+  const raw = await source.read('package-lock.json');
+  if (raw === null) return null;
 
   let lock: { packages?: Record<string, { version?: string }> };
   try {
@@ -97,7 +92,9 @@ async function readInstalledPackages(
  * installed in this project. Requires network access; when it is unavailable
  * the result reports the failure instead of returning placeholder findings.
  */
-export async function performSecurityScan(projectRoot = process.cwd()): Promise<SecurityScanResult> {
+export async function performSecurityScan(
+  source: ProjectSource = createFileSystemSource(),
+): Promise<SecurityScanResult> {
   const scannedAt = new Date().toISOString();
   const base: SecurityScanResult = {
     ok: false,
@@ -107,7 +104,7 @@ export async function performSecurityScan(projectRoot = process.cwd()): Promise<
     vulnerabilities: [],
   };
 
-  const installed = await readInstalledPackages(projectRoot);
+  const installed = await readInstalledPackages(source);
   if (!installed || installed.count === 0) {
     return {
       ...base,

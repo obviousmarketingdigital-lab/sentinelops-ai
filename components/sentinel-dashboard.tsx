@@ -34,6 +34,9 @@ export function SentinelDashboard() {
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
     "[INIT] Sentinel audit agent ready.",
   ]);
+  const [repoInput, setRepoInput] = useState("");
+  const [auditingRepo, setAuditingRepo] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
 
   const log = useCallback((line: string) => {
     setTerminalLogs((prev) => [line, ...prev].slice(0, 60));
@@ -158,6 +161,46 @@ export function SentinelDashboard() {
     }
   }
 
+  async function handleAuditRepo() {
+    const match = repoInput.trim().replace(/^https?:\/\/github\.com\//i, "").match(/^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+    if (!match) {
+      setRepoError("Use the owner/repo form, for example vercel/next.js.");
+      return;
+    }
+
+    const [, owner, repo] = match;
+    setAuditingRepo(true);
+    setRepoError(null);
+    log(`[AUDIT] Reading github.com/${owner}/${repo}...`);
+
+    try {
+      const res = await fetch("/api/sentinel/audit-repo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner, repo }),
+      });
+      const data = await res.json();
+
+      if (!data.success) {
+        setRepoError(data.error ?? "The repository could not be audited.");
+        log(`[AUDIT] Failed: ${data.error}`);
+        return;
+      }
+
+      setLocalReport(data.report);
+      setScan(data.scan);
+      log(
+        data.report.analyzable
+          ? `[AUDIT] ${data.report.findingsCount} finding(s) from ${data.report.filesInspected.length} file(s) in ${data.report.origin}.`
+          : `[AUDIT] No package.json found in ${data.report.origin}.`,
+      );
+    } catch {
+      setRepoError("The request failed.");
+    } finally {
+      setAuditingRepo(false);
+    }
+  }
+
   async function handleAutoFix(id: string) {
     setFixingId(id);
     log(`[AGENT] Preparing a pull request for ${id}...`);
@@ -231,6 +274,45 @@ export function SentinelDashboard() {
 
         {activeTab === "local" && (
           <div>
+            <div className="mb-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+              <label
+                htmlFor="repo-input"
+                className="block text-xs font-mono uppercase tracking-wider text-slate-400 mb-3"
+              >
+                Audit any public GitHub repository
+              </label>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  id="repo-input"
+                  value={repoInput}
+                  onChange={(event) => setRepoInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") handleAuditRepo();
+                  }}
+                  placeholder="owner/repo"
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-mono text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-sky-500/60"
+                />
+                <button
+                  onClick={handleAuditRepo}
+                  disabled={auditingRepo}
+                  className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs transition disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                >
+                  {auditingRepo ? "Reading..." : "Run audit"}
+                </button>
+                <button
+                  onClick={() => {
+                    setRepoInput("");
+                    setRepoError(null);
+                    loadData();
+                  }}
+                  className="px-5 py-2.5 rounded-xl border border-slate-700 text-slate-300 font-mono text-xs hover:border-slate-500 transition cursor-pointer whitespace-nowrap"
+                >
+                  This project
+                </button>
+              </div>
+              {repoError && <p className="mt-3 text-sm text-red-400">{repoError}</p>}
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
               <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
                 <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
@@ -260,13 +342,13 @@ export function SentinelDashboard() {
 
               <div className="bg-slate-900/60 border border-sky-500/20 rounded-2xl p-6">
                 <div className="text-xs font-mono text-slate-400 uppercase tracking-wider mb-2">
-                  Project
+                  Source
                 </div>
                 <div className="text-2xl font-extrabold text-sky-300 font-mono truncate">
                   {localReport?.projectName ?? "—"}
                 </div>
                 <div className="text-xs text-slate-500 mt-1 truncate">
-                  {localReport?.projectRoot ?? ""}
+                  {localReport?.origin ?? ""}
                 </div>
               </div>
             </div>

@@ -7,8 +7,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Sentinel inspects a project's `package.json`, `Dockerfile`, `tsconfig.json`,
-`package-lock.json` and `.gitignore`, and cross-checks the installed dependency
-tree against the public npm advisory database. Every finding carries the exact
+lockfile and `.gitignore`, and cross-checks the installed dependency tree
+against the public npm advisory database. It reads from a `ProjectSource`, so
+the same audit runs against a directory on disk or any public GitHub
+repository — type `owner/repo` in the dashboard. Every finding carries the exact
 text that produced it, so any claim on the dashboard can be traced back to a
 line in a file.
 
@@ -24,7 +26,7 @@ This matters more than a feature list, so it comes first.
 | --- | --- |
 | Docker | multi-stage build, slim base image, non-root `USER`, `npm ci` vs `npm install` |
 | TypeScript | whether `compilerOptions.strict` is enabled |
-| Dependencies | lockfile present, Node version pinned via `engines` |
+| Dependencies | a lockfile is committed (npm, pnpm, yarn or bun), Node version pinned via `engines` |
 | Security | `.env` files not covered by `.gitignore` |
 | Advisories | installed versions from `package-lock.json` queried against the npm advisory database |
 
@@ -81,6 +83,11 @@ GITHUB_OWNER=your-github-username
 GITHUB_REPO=your-repository
 ```
 
+`GITHUB_WEBHOOK_SECRET` is required for the webhook endpoint to accept anything;
+without it every delivery is rejected. `STRIPE_SECRET_KEY` enables checkout, and
+without it the endpoint reports that billing is unavailable rather than
+simulating a session.
+
 `SENTINEL_DATA_DIR` points the applied-fix history at a mounted volume. Without
 it the history lives on the container filesystem and is lost on every restart.
 
@@ -92,6 +99,7 @@ it the history lives on the container filesystem and is lost on every restart.
 | --- | --- |
 | `GET /api/health` | process status, uptime and the port in use |
 | `GET /api/sentinel/local-audit` | the static audit of the working directory |
+| `POST /api/sentinel/audit-repo` | audits a GitHub repository: `{ owner, repo, ref? }` |
 | `GET /api/sentinel/security` | npm advisories for the installed tree |
 | `GET /api/sentinel/badge` | SVG health badge |
 | `POST /api/sentinel/local-fix` | opens a pull request for one finding |
@@ -99,6 +107,8 @@ it the history lives on the container filesystem and is lost on every restart.
 | `POST /api/sentinel/fix` | a remediation plan; `executed` is always `false` |
 | `GET /api/sentinel/microservices` | sample fleet (`mode: "sample"`) |
 | `GET /api/sentinel/saas` | sample organization (`mode: "sample"`) |
+| `POST /api/webhooks/github` | rejects deliveries without a valid `x-hub-signature-256` |
+| `POST /api/revenue/checkout` | Stripe checkout; returns 503 when billing is unconfigured |
 
 ---
 

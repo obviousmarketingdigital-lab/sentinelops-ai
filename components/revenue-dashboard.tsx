@@ -9,6 +9,7 @@ export function RevenueDashboard() {
   const [generatedCopy, setGeneratedCopy] = useState<{ subject: string; body: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -50,17 +51,22 @@ export function RevenueDashboard() {
   async function handleCheckout(planId: string) {
     setCheckoutLoading(planId);
     try {
+      setCheckoutError(null);
       const res = await fetch("/api/revenue/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planId, email: "dev@example.com" }),
+        body: JSON.stringify({ planId }),
       });
       const data = await res.json();
-      if (data.success) {
-        window.open(data.checkoutUrl, '_blank');
+      if (data.success && data.checkoutUrl) {
+        window.open(data.checkoutUrl, "_blank");
+      } else {
+        // A failed checkout has to be visible. Swallowing it leaves the button
+        // looking like it worked.
+        setCheckoutError(data.error ?? "Checkout could not be started.");
       }
-    } catch (err) {
-      console.error("Failed to initiate checkout", err);
+    } catch {
+      setCheckoutError("Checkout request failed.");
     } finally {
       setCheckoutLoading(null);
     }
@@ -110,6 +116,11 @@ export function RevenueDashboard() {
           {/* Checkout */}
           <div className="space-y-6">
             <h2 className="text-xl font-bold">Subscription Plans</h2>
+            {checkoutError && (
+              <div className="rounded-2xl border border-red-500/30 bg-red-500/5 px-5 py-4 text-sm text-red-300">
+                {checkoutError}
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {plans.map((plan) => (
                 <div key={plan.planId} className="bg-slate-950 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">

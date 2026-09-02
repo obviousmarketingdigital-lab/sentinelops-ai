@@ -1,5 +1,5 @@
-import fs from 'fs/promises';
 import path from 'path';
+import { createFileSystemSource, type ProjectSource } from './project-source';
 
 export interface LocalAuditFinding {
   id: string;
@@ -16,7 +16,8 @@ export interface LocalAuditFinding {
 
 export interface LocalAuditReport {
   projectName: string;
-  projectRoot: string;
+  /** Where the files were read from: a path, a repository, an archive. */
+  origin: string;
   timestamp: string;
   /** False when the source tree is not reachable, e.g. a standalone container. */
   analyzable: boolean;
@@ -28,19 +29,13 @@ export interface LocalAuditReport {
   notes: string[];
 }
 
+const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb'];
+
 const IMPACT_PENALTY: Record<LocalAuditFinding['impact'], number> = {
   High: 15,
   Medium: 8,
   Low: 3,
 };
-
-async function readIfPresent(root: string, relative: string): Promise<string | null> {
-  try {
-    return await fs.readFile(path.join(root, relative), 'utf8');
-  } catch {
-    return null;
-  }
-}
 
 /**
  * tsconfig.json allows comments and trailing commas; JSON.parse does not.
@@ -195,7 +190,8 @@ function inspectDockerfile(dockerfile: string): LocalAuditFinding[] {
   return findings;
 }
 
-export async function auditLocalProject(projectRoot = process.cwd()): Promise<LocalAuditReport> {
+/** Audits whatever the given source exposes. */
+export async function auditProject(source: ProjectSource): Promise<LocalAuditReport> {
   const timestamp = new Date().toISOString();
   const filesInspected: string[] = [];
   const filesMissing: string[] = [];
@@ -208,12 +204,12 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
     return content;
   };
 
-  const packageJsonRaw = track('package.json', await readIfPresent(projectRoot, 'package.json'));
+  const packageJsonRaw = track('package.json', await source.read('package.json'));
 
   if (!packageJsonRaw) {
     return {
       projectName: 'unknown',
-      projectRoot,
+      origin: source.origin,
       timestamp,
       analyzable: false,
       filesInspected,
@@ -222,7 +218,7 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
       findingsCount: 0,
       findings: [],
       notes: [
-        'No package.json was found at the working directory, so no static analysis ran.',
+        `No package.json was found at ${source.origin}, so no static analysis ran.`,
         'This is expected when the app serves from a standalone build that does not ship its own source tree.',
       ],
     };
@@ -232,16 +228,16 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
     name?: string;
     engines?: { node?: string };
   };
-  const projectName = packageJson.name ?? path.basename(projectRoot);
+  const projectName = packageJson.name ?? path.basename(source.origin);
 
-  const dockerfile = track('Dockerfile', await readIfPresent(projectRoot, 'Dockerfile'));
+  const dockerfile = track('Dockerfile', await source.read('Dockerfile'));
   if (dockerfile) {
     findings.push(...inspectDockerfile(dockerfile));
   } else {
     notes.push('No Dockerfile found, so container checks were skipped.');
   }
 
-  const tsconfigRaw = track('tsconfig.json', await readIfPresent(projectRoot, 'tsconfig.json'));
+  const tsconfigRaw = track('tsconfig.json', await source.read('tsconfig.json'));
   if (tsconfigRaw) {
     const tsconfig = parseJsonc(tsconfigRaw) as { compilerOptions?: { strict?: boolean } } | null;
     const strict = tsconfig?.compilerOptions?.strict;
@@ -261,18 +257,25 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
     }
   }
 
-  const lockfile = track('package-lock.json', await readIfPresent(projectRoot, 'package-lock.json'));
-  if (!lockfile) {
+  // npm is not the only package manager, and flagging a pnpm or yarn project
+  // for having no package-lock.json would be a false finding.
+  const foundLockfiles: string[] = [];
+  for (const candidate of LOCKFILES) {
+    const content = track(candidate, await source.read(candidate));
+    if (content !== null) foundLockfiles.push(candidate);
+  }
+
+  if (foundLockfiles.length === 0) {
     findings.push({
       id: 'deps-no-lockfile',
       category: 'Dependencies',
-      title: 'No package-lock.json committed',
+      title: 'No lockfile committed',
       description:
         'Without a lockfile, two installs of the same commit can resolve to different dependency versions.',
       impact: 'High',
-      recommendation: 'Commit package-lock.json and install with npm ci.',
+      recommendation: 'Commit the lockfile your package manager produces and install from it.',
       autoFixAvailable: false,
-      evidence: 'package-lock.json not found',
+      evidence: `none of ${LOCKFILES.join(', ')} was found`,
       source: 'package.json',
     });
   }
@@ -292,10 +295,10 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
     });
   }
 
-  const gitignore = track('.gitignore', await readIfPresent(projectRoot, '.gitignore'));
+  const gitignore = track('.gitignore', await source.read('.gitignore'));
   const ignoresEnv = !!gitignore && /^\s*\.env/m.test(gitignore);
   for (const envFile of ['.env', '.env.local', '.env.production']) {
-    const present = await readIfPresent(projectRoot, envFile);
+    const present = await source.read(envFile);
     if (present !== null && !ignoresEnv) {
       findings.push({
         id: `security-env-exposed-${envFile}`,
@@ -315,7 +318,7 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
 
   return {
     projectName,
-    projectRoot,
+    origin: source.origin,
     timestamp,
     analyzable: true,
     filesInspected,
@@ -325,4 +328,9 @@ export async function auditLocalProject(projectRoot = process.cwd()): Promise<Lo
     findings,
     notes,
   };
+}
+
+/** Convenience wrapper for auditing a directory on this machine. */
+export function auditLocalProject(projectRoot = process.cwd()): Promise<LocalAuditReport> {
+  return auditProject(createFileSystemSource(projectRoot));
 }
