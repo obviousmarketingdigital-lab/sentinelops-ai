@@ -1,21 +1,19 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import type { SentinelReport } from "@/lib/cloud-analyzer";
 import type { LocalAuditReport } from "@/lib/local-project-analyzer";
 import type { SecurityScanResult } from "@/lib/security-scanner";
 
-type Tab = "local" | "cloud" | "security" | "saas" | "fleet";
+type Tab = "findings" | "advisories";
 
 /**
  * The palette is deliberately almost colourless. This tool's only claim is that
  * what it shows was measured, and a dashboard that shouts reads like a demo.
- * One warm hue is reserved for two meanings and nothing else: a high-impact
- * finding, and data that was not measured.
+ * One warm hue is reserved for a high-impact finding and for anything the audit
+ * could not measure.
  */
 const THEME = {
   "--ground": "#0b0e11",
-  "--panel": "#12161a",
   "--line": "#1f262c",
   "--line-soft": "#171d22",
   "--ink": "#e6eaed",
@@ -25,116 +23,73 @@ const THEME = {
   "--ok": "#7c9c88",
 } as React.CSSProperties;
 
-function NotMeasured({ notice }: { notice: string }) {
-  return (
-    <div className="mb-10 border-l-2 border-[var(--flag)] pl-5 py-1">
-      <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--flag)]">
-        Not measured
-      </div>
-      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">{notice}</p>
-    </div>
-  );
-}
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: "findings", label: "findings" },
+  { id: "advisories", label: "advisories" },
+];
 
-function Rule() {
-  return <div className="h-px bg-[var(--line)]" />;
-}
+const HEAVY = new Set(["High", "Critical"]);
 
 export function SentinelDashboard() {
-  const [activeTab, setActiveTab] = useState<Tab>("local");
-  const [report, setReport] = useState<SentinelReport | null>(null);
-  const [localReport, setLocalReport] = useState<LocalAuditReport | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>("findings");
+  const [report, setReport] = useState<LocalAuditReport | null>(null);
   const [scan, setScan] = useState<SecurityScanResult | null>(null);
-  const [services, setServices] = useState<Array<Record<string, never> | any>>([]);
-  const [fleetNotice, setFleetNotice] = useState("");
-  const [saasNotice, setSaasNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [fixingId, setFixingId] = useState<string | null>(null);
-  const [sweepingId, setSweepingId] = useState<string | null>(null);
-  const [successLogs, setSuccessLogs] = useState<Record<string, string>>({});
-  const [orgData, setOrgData] = useState<any>(null);
-  const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [pullRequests, setPullRequests] = useState<Record<string, string>>({});
+  const [activity, setActivity] = useState<string[]>([]);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
-  // When set, every tab describes this repository instead of the server's own
+  // When set, both tabs describe this repository instead of the server's own
   // directory, so the panels can never disagree about what they are showing.
-  const [auditTarget, setAuditTarget] = useState<{ owner: string; repo: string } | null>(null);
+  const [target, setTarget] = useState<{ owner: string; repo: string } | null>(null);
 
   const log = useCallback((line: string) => {
-    setTerminalLogs((prev) => [line, ...prev].slice(0, 40));
+    setActivity((prev) => [line, ...prev].slice(0, 40));
   }, []);
 
-  const fetchFixes = useCallback(async () => {
+  const loadPullRequests = useCallback(async () => {
     try {
       const res = await fetch("/api/sentinel/local-fix");
       const data = await res.json();
-      if (data.success) setSuccessLogs(data.fixes);
+      if (data.success) setPullRequests(data.fixes);
     } catch {
       log("Could not read the pull request history.");
     }
   }, [log]);
 
-  const fetchOrg = useCallback(async () => {
-    try {
-      const res = await fetch("/api/sentinel/saas");
-      const data = await res.json();
-      if (data.success) {
-        setOrgData(data.organization);
-        setSaasNotice(data.notice ?? "");
-      }
-    } catch {
-      log("Could not read organization data.");
-    }
-  }, [log]);
-
-  const fetchFleet = useCallback(async () => {
-    try {
-      const res = await fetch("/api/sentinel/microservices");
-      const data = await res.json();
-      if (data.success) {
-        setServices(data.services);
-        setFleetNotice(data.notice ?? "");
-      }
-    } catch {
-      log("Could not read fleet data.");
-    }
-  }, [log]);
-
-  const loadData = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      if (activeTab === "cloud") {
-        const res = await fetch("/api/sentinel/analyze");
-        const data = await res.json();
-        if (data.success) setReport(data.report);
-      } else if (activeTab === "fleet") {
-        await fetchFleet();
-      } else if (auditTarget) {
-        // One request feeds both the audit and the advisory tab, so switching
-        // between them cannot replace the repository with this project.
-        log(`Reading github.com/${auditTarget.owner}/${auditTarget.repo}`);
+      if (target) {
+        // One request feeds both tabs, so switching between them cannot swap
+        // the repository for this project.
+        log(`Reading github.com/${target.owner}/${target.repo}`);
         const res = await fetch("/api/sentinel/audit-repo", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(auditTarget),
+          body: JSON.stringify(target),
         });
         const data = await res.json();
 
         if (!data.success) {
           setRepoError(data.error ?? "The repository could not be audited.");
           log(data.error ?? "The repository could not be audited.");
-          setAuditTarget(null);
+          setTarget(null);
           return;
         }
 
-        setLocalReport(data.report);
+        setReport(data.report);
         setScan(data.scan);
         log(
           data.report.analyzable
             ? `${data.report.findingsCount} finding(s) in ${data.report.origin}`
             : `Could not analyze ${data.report.origin}`,
         );
-      } else if (activeTab === "security") {
+        return;
+      }
+
+      if (activeTab === "advisories") {
         const res = await fetch("/api/sentinel/security");
         const data = await res.json();
         setScan(data.result);
@@ -143,69 +98,32 @@ export function SentinelDashboard() {
             ? `${data.result.packagesScanned} packages checked against the npm advisory database`
             : `Advisory scan unavailable: ${data.result?.error ?? "unknown error"}`,
         );
-      } else {
-        const res = await fetch("/api/sentinel/local-audit");
-        const data = await res.json();
-        if (data.success) {
-          setLocalReport(data.report);
-          log(
-            data.report.analyzable
-              ? `Read ${data.report.filesInspected.length} file(s) in ${data.report.origin}`
-              : "No source tree reachable from the running process",
-          );
-        }
+        return;
+      }
+
+      const res = await fetch("/api/sentinel/local-audit");
+      const data = await res.json();
+      if (data.success) {
+        setReport(data.report);
+        log(
+          data.report.analyzable
+            ? `Read ${data.report.filesInspected.length} file(s) in ${data.report.origin}`
+            : "No source tree reachable from the running process",
+        );
       }
     } catch {
       log("Request failed.");
     } finally {
       setLoading(false);
     }
-  }, [activeTab, auditTarget, fetchFleet, log]);
+  }, [activeTab, target, log]);
 
   useEffect(() => {
-    loadData();
-    fetchFixes();
-    fetchOrg();
-  }, [loadData, fetchFixes, fetchOrg]);
+    load();
+    loadPullRequests();
+  }, [load, loadPullRequests]);
 
-  async function handleUpgradeTier(tier: string) {
-    try {
-      const res = await fetch("/api/sentinel/saas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "upgrade", tier }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setOrgData(data.organization);
-        log(`Tier set to ${tier} in memory only.`);
-      }
-    } catch {
-      log("Tier change failed.");
-    }
-  }
-
-  async function handleRunSweep(id: string, name: string) {
-    setSweepingId(id);
-    try {
-      const res = await fetch("/api/sentinel/microservices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setServices(data.services);
-        log(`Reset the sample record for ${name}. No service was contacted.`);
-      }
-    } catch {
-      log(`Could not update ${name}.`);
-    } finally {
-      setSweepingId(null);
-    }
-  }
-
-  function handleAuditRepo() {
+  function auditRepository() {
     const match = repoInput
       .trim()
       .replace(/^https?:\/\/github\.com\//i, "")
@@ -216,18 +134,17 @@ export function SentinelDashboard() {
       return;
     }
 
-    // Setting the target is enough: the effect reloads whichever tab is open.
     setRepoError(null);
-    setAuditTarget({ owner: match[1], repo: match[2] });
+    setTarget({ owner: match[1], repo: match[2] });
   }
 
-  function handleAuditThisProject() {
+  function auditThisProject() {
     setRepoInput("");
     setRepoError(null);
-    setAuditTarget(null);
+    setTarget(null);
   }
 
-  async function handleAutoFix(id: string) {
+  async function openPullRequest(id: string) {
     setFixingId(id);
     log(`Preparing a pull request for ${id}`);
     try {
@@ -238,7 +155,7 @@ export function SentinelDashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        setSuccessLogs(data.fixes);
+        setPullRequests(data.fixes);
         log(`Pull request opened: ${data.prUrl}`);
       } else {
         log(data.error);
@@ -249,16 +166,6 @@ export function SentinelDashboard() {
       setFixingId(null);
     }
   }
-
-  const tabs: Array<{ id: Tab; label: string; sample?: boolean }> = [
-    { id: "local", label: "findings" },
-    { id: "security", label: "advisories" },
-    { id: "fleet", label: "fleet", sample: true },
-    { id: "saas", label: "organization", sample: true },
-    { id: "cloud", label: "cloud", sample: true },
-  ];
-
-  const isHeavy = (level: string) => level === "High" || level === "Critical";
 
   return (
     <div
@@ -273,14 +180,16 @@ export function SentinelDashboard() {
       <div className="mx-auto w-full max-w-5xl px-6 py-12 md:px-10 md:py-16">
         <header className="flex flex-col gap-8 sm:flex-row sm:items-baseline sm:justify-between">
           <div className="flex items-baseline gap-4">
-            <span className="font-mono text-sm lowercase tracking-[0.42em] text-[var(--ink)]">
-              sentinel
-            </span>
-            <img src="/api/sentinel/badge" alt="Repository health badge" className="h-5 opacity-70" />
+            <span className="font-mono text-sm lowercase tracking-[0.42em]">sentinel</span>
+            <img
+              src="/api/sentinel/badge?repo=obviousmarketingdigital-lab/sentinelops-ai"
+              alt="Sentinel health badge for this repository"
+              className="h-5 opacity-70"
+            />
           </div>
 
-          <nav className="flex flex-wrap gap-x-6 gap-y-2">
-            {tabs.map((tab) => (
+          <nav className="flex gap-6">
+            {TABS.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
@@ -291,71 +200,68 @@ export function SentinelDashboard() {
                 }`}
               >
                 {tab.label}
-                {tab.sample && <span className="ml-1 text-[var(--flag)]">*</span>}
               </button>
             ))}
           </nav>
         </header>
 
-        <div className="mt-16">
-          {activeTab === "local" && (
-            <section>
-              <h1 className="max-w-xl text-2xl font-normal leading-snug tracking-tight md:text-3xl">
-                Point it at a repository. It reads the files and reports only what it found.
-              </h1>
+        <section className="mt-16">
+          <h1 className="max-w-xl text-2xl font-normal leading-snug tracking-tight md:text-3xl">
+            Point it at a repository. It reads the files and reports only what it found.
+          </h1>
 
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <input
-                  id="repo-input"
-                  value={repoInput}
-                  onChange={(event) => setRepoInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") handleAuditRepo();
-                  }}
-                  placeholder="owner/repo"
-                  aria-label="Public GitHub repository"
-                  className="w-full flex-1 border-b border-[var(--line)] bg-transparent pb-2 font-mono text-base text-[var(--ink)] placeholder:text-[var(--ink-faint)] focus:border-[var(--ink-dim)] focus:outline-none sm:max-w-sm"
-                />
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleAuditRepo}
-                    disabled={loading}
-                    className="border border-[var(--ink)] px-5 py-2 font-mono text-xs text-[var(--ink)] transition-colors hover:bg-[var(--ink)] hover:text-[var(--ground)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
-                  >
-                    {loading ? "reading" : "audit"}
-                  </button>
-                  <button
-                    onClick={handleAuditThisProject}
-                    className="px-2 py-2 font-mono text-xs text-[var(--ink-faint)] transition-colors hover:text-[var(--ink-dim)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
-                  >
-                    this project
-                  </button>
-                </div>
-              </div>
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <input
+              id="repo-input"
+              value={repoInput}
+              onChange={(event) => setRepoInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") auditRepository();
+              }}
+              placeholder="owner/repo"
+              aria-label="Public GitHub repository"
+              className="w-full flex-1 border-b border-[var(--line)] bg-transparent pb-2 font-mono text-base placeholder:text-[var(--ink-faint)] focus:border-[var(--ink-dim)] focus:outline-none sm:max-w-sm"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={auditRepository}
+                disabled={loading}
+                className="border border-[var(--ink)] px-5 py-2 font-mono text-xs transition-colors hover:bg-[var(--ink)] hover:text-[var(--ground)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+              >
+                {loading ? "reading" : "audit"}
+              </button>
+              <button
+                onClick={auditThisProject}
+                className="px-2 py-2 font-mono text-xs text-[var(--ink-faint)] transition-colors hover:text-[var(--ink-dim)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+              >
+                this project
+              </button>
+            </div>
+          </div>
 
-              {repoError && (
-                <p className="mt-4 font-mono text-xs text-[var(--flag)]">{repoError}</p>
-              )}
+          {repoError && <p className="mt-4 font-mono text-xs text-[var(--flag)]">{repoError}</p>}
 
-              {localReport && (
+          {activeTab === "findings" && (
+            <>
+              {report && (
                 <p className="mt-14 font-mono text-xs leading-relaxed text-[var(--ink-dim)]">
-                  <span className="text-[var(--ink)]">{localReport.origin}</span>
-                  {localReport.analyzable && (
+                  <span className="text-[var(--ink)]">{report.origin}</span>
+                  {report.analyzable && (
                     <>
                       {" · "}
-                      {localReport.findingsCount === 0
+                      {report.findingsCount === 0
                         ? "no findings"
-                        : `${localReport.findingsCount} finding${localReport.findingsCount === 1 ? "" : "s"}`}
+                        : `${report.findingsCount} finding${report.findingsCount === 1 ? "" : "s"}`}
                       {" · "}
-                      {localReport.filesInspected.length} file
-                      {localReport.filesInspected.length === 1 ? "" : "s"} read
-                      {localReport.healthScore !== null && <> · health {localReport.healthScore}</>}
+                      {report.filesInspected.length} file
+                      {report.filesInspected.length === 1 ? "" : "s"} read
+                      {report.healthScore !== null && <> · health {report.healthScore}</>}
                     </>
                   )}
-                  {localReport.filesUnreadable.length > 0 && (
+                  {report.filesUnreadable.length > 0 && (
                     <span className="text-[var(--flag)]">
                       {" · "}
-                      {localReport.filesUnreadable.length} unreadable
+                      {report.filesUnreadable.length} unreadable
                     </span>
                   )}
                 </p>
@@ -364,23 +270,23 @@ export function SentinelDashboard() {
               <div className="mt-6">
                 {loading ? (
                   <p className="py-16 font-mono text-xs text-[var(--ink-faint)]">reading files…</p>
-                ) : localReport && !localReport.analyzable ? (
+                ) : report && !report.analyzable ? (
                   <div className="border-t border-[var(--line)] pt-6">
                     <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--flag)]">
                       Nothing measured
                     </p>
-                    {localReport.notes.map((note) => (
+                    {report.notes.map((note) => (
                       <p key={note} className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
                         {note}
                       </p>
                     ))}
                   </div>
-                ) : localReport && localReport.findings.length === 0 ? (
+                ) : report && report.findings.length === 0 ? (
                   <div className="border-t border-[var(--line)] pt-6">
                     <p className="text-sm text-[var(--ok)]">
-                      Every check passed: Docker, TypeScript, lockfile and exposed secrets.
+                      Every check passed: Docker, TypeScript, dependencies and exposed secrets.
                     </p>
-                    {localReport.notes.map((note) => (
+                    {report.notes.map((note) => (
                       <p key={note} className="mt-3 text-sm text-[var(--ink-faint)]">
                         {note}
                       </p>
@@ -388,9 +294,8 @@ export function SentinelDashboard() {
                   </div>
                 ) : (
                   <div>
-                    {localReport?.findings.map((finding) => {
-                      const prUrl = successLogs[finding.id];
-                      const heavy = isHeavy(finding.impact);
+                    {report?.findings.map((finding) => {
+                      const prUrl = pullRequests[finding.id];
 
                       return (
                         <article key={finding.id} className="border-t border-[var(--line)] py-8">
@@ -398,7 +303,9 @@ export function SentinelDashboard() {
                             <div className="flex items-baseline gap-4">
                               <span
                                 className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
-                                  heavy ? "text-[var(--flag)]" : "text-[var(--ink-faint)]"
+                                  HEAVY.has(finding.impact)
+                                    ? "text-[var(--flag)]"
+                                    : "text-[var(--ink-faint)]"
                                 }`}
                               >
                                 {finding.impact}
@@ -412,15 +319,13 @@ export function SentinelDashboard() {
                             </span>
                           </div>
 
-                          <h2 className="mt-4 text-lg font-normal tracking-tight text-[var(--ink)]">
-                            {finding.title}
-                          </h2>
+                          <h2 className="mt-4 text-lg font-normal tracking-tight">{finding.title}</h2>
 
                           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
                             {finding.description}
                           </p>
 
-                          <p className="mt-5 border-l border-[var(--line)] pl-4 font-mono text-xs leading-relaxed text-[var(--ink-dim)]">
+                          <p className="mt-5 border-l border-[var(--line)] pl-4 font-mono text-xs leading-relaxed text-[var(--ink-dim)] break-words">
                             <span className="text-[var(--ink-faint)]">observed </span>
                             <span className="text-[var(--ink)]">{finding.evidence}</span>
                           </p>
@@ -440,7 +345,7 @@ export function SentinelDashboard() {
                               </a>
                             ) : (
                               <button
-                                onClick={() => handleAutoFix(finding.id)}
+                                onClick={() => openPullRequest(finding.id)}
                                 disabled={fixingId === finding.id}
                                 className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
                               >
@@ -451,24 +356,21 @@ export function SentinelDashboard() {
                         </article>
                       );
                     })}
-                    <Rule />
+                    <div className="h-px bg-[var(--line)]" />
                   </div>
                 )}
               </div>
-            </section>
+            </>
           )}
 
-          {activeTab === "security" && (
-            <section>
-              <h1 className="max-w-xl text-2xl font-normal leading-snug tracking-tight md:text-3xl">
-                Known advisories for the versions this project actually installs.
-              </h1>
-              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+          {activeTab === "advisories" && (
+            <div className="mt-14">
+              <p className="max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
                 Versions come from the lockfile and are checked against the public npm advisory
                 database.
               </p>
 
-              <div className="mt-14">
+              <div className="mt-8">
                 {loading ? (
                   <p className="py-16 font-mono text-xs text-[var(--ink-faint)]">
                     querying advisories…
@@ -503,7 +405,7 @@ export function SentinelDashboard() {
                               <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
                                 <span
                                   className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
-                                    isHeavy(vuln.severity)
+                                    HEAVY.has(vuln.severity)
                                       ? "text-[var(--flag)]"
                                       : "text-[var(--ink-faint)]"
                                   }`}
@@ -542,142 +444,25 @@ export function SentinelDashboard() {
                               )}
                             </article>
                           ))}
-                          <Rule />
+                          <div className="h-px bg-[var(--line)]" />
                         </>
                       )}
                     </div>
                   </>
                 )}
               </div>
-            </section>
+            </div>
           )}
+        </section>
 
-          {activeTab === "fleet" && (
-            <section>
-              {fleetNotice && <NotMeasured notice={fleetNotice} />}
-              <h1 className="text-2xl font-normal tracking-tight md:text-3xl">Fleet</h1>
-
-              <div className="mt-10">
-                {services.map((svc) => (
-                  <article
-                    key={svc.id}
-                    className="flex flex-wrap items-baseline justify-between gap-4 border-t border-[var(--line)] py-6"
-                  >
-                    <div>
-                      <h2 className="font-mono text-sm text-[var(--ink)]">{svc.name}</h2>
-                      <p className="mt-1 font-mono text-xs text-[var(--ink-faint)]">
-                        port {svc.port} · health {svc.healthScore} · {svc.activeIncidents} incident
-                        {svc.activeIncidents === 1 ? "" : "s"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-6">
-                      <span
-                        className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
-                          svc.status === "HEALTHY" ? "text-[var(--ok)]" : "text-[var(--flag)]"
-                        }`}
-                      >
-                        {svc.status}
-                      </span>
-                      <button
-                        onClick={() => handleRunSweep(svc.id, svc.name)}
-                        disabled={sweepingId === svc.id}
-                        className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] disabled:opacity-40"
-                      >
-                        {sweepingId === svc.id ? "resetting" : "reset sample"}
-                      </button>
-                    </div>
-                  </article>
-                ))}
-                <Rule />
-              </div>
-            </section>
-          )}
-
-          {activeTab === "saas" && (
-            <section>
-              {saasNotice && <NotMeasured notice={saasNotice} />}
-              <h1 className="text-2xl font-normal tracking-tight md:text-3xl">Organization</h1>
-
-              <dl className="mt-10 max-w-2xl font-mono text-sm">
-                <div className="flex justify-between border-t border-[var(--line)] py-4">
-                  <dt className="text-[var(--ink-faint)]">name</dt>
-                  <dd>{orgData?.name ?? "—"}</dd>
-                </div>
-                <div className="flex justify-between border-t border-[var(--line)] py-4">
-                  <dt className="text-[var(--ink-faint)]">tier</dt>
-                  <dd>{orgData?.tier ?? "—"}</dd>
-                </div>
-                <div className="flex justify-between border-t border-b border-[var(--line)] py-4">
-                  <dt className="text-[var(--ink-faint)]">scans</dt>
-                  <dd>
-                    {orgData ? `${orgData.scansUsed} of ${orgData.monthlyQuota}` : "—"}
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="mt-8 flex gap-3">
-                <button
-                  onClick={() => handleUpgradeTier("PRO")}
-                  className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)]"
-                >
-                  set pro
-                </button>
-                <button
-                  onClick={() => handleUpgradeTier("ENTERPRISE")}
-                  className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)]"
-                >
-                  set enterprise
-                </button>
-              </div>
-            </section>
-          )}
-
-          {activeTab === "cloud" && (
-            <section>
-              {report && <NotMeasured notice={report.notice} />}
-              <h1 className="text-2xl font-normal tracking-tight md:text-3xl">Cloud cost</h1>
-
-              {report && (
-                <p className="mt-4 font-mono text-xs text-[var(--ink-dim)]">
-                  {report.anomaliesCount} illustrative anomalies · $
-                  {report.totalMonthlyWasteUSD.toLocaleString()} per month
-                </p>
-              )}
-
-              <div className="mt-10">
-                {report?.anomalies.map((anomaly) => (
-                  <article
-                    key={anomaly.id}
-                    className="flex flex-wrap items-baseline justify-between gap-4 border-t border-[var(--line)] py-6"
-                  >
-                    <div className="max-w-xl">
-                      <h2 className="font-mono text-sm">{anomaly.resourceName}</h2>
-                      <p className="mt-2 text-sm leading-relaxed text-[var(--ink-dim)]">
-                        {anomaly.issue}
-                      </p>
-                    </div>
-                    <span className="font-mono text-sm text-[var(--ink-faint)]">
-                      ${anomaly.potentialMonthlySavingsUSD}/mo
-                    </span>
-                  </article>
-                ))}
-                <Rule />
-              </div>
-            </section>
-          )}
-        </div>
-
-        {terminalLogs.length > 0 && (
+        {activity.length > 0 && (
           <footer className="mt-20 border-t border-[var(--line-soft)] pt-6">
             <h2 className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
               Activity
             </h2>
             <ul className="mt-3 space-y-1.5">
-              {terminalLogs.slice(0, 6).map((line, index) => (
-                <li
-                  key={index}
-                  className="font-mono text-xs leading-relaxed text-[var(--ink-faint)]"
-                >
+              {activity.slice(0, 6).map((line, index) => (
+                <li key={index} className="font-mono text-xs leading-relaxed text-[var(--ink-faint)]">
                   {line}
                 </li>
               ))}

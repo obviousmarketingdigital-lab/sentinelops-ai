@@ -169,3 +169,94 @@ describe("github webhook signature", () => {
     expect(isSignatureValid(body, "sha256=short", secret)).toBe(false);
   });
 });
+
+describe("expanded checks", () => {
+  const base = {
+    "package.json": JSON.stringify({ name: "fixture", engines: { node: ">=20" } }),
+    "package-lock.json": "{}",
+    ".gitignore": "node_modules\n.env*\n",
+  };
+
+  it("flags a base image with no tag and one on latest", async () => {
+    const report = await auditProject(
+      createInMemorySource({
+        ...base,
+        Dockerfile: "FROM node AS builder\nFROM node:latest AS runner\nUSER app\n",
+      }),
+    );
+
+    const finding = report.findings.find((item) => item.id === "docker-unpinned-base");
+    expect(finding).toBeDefined();
+    expect(finding!.evidence).toContain("FROM node:latest");
+  });
+
+  it("accepts a pinned base image", async () => {
+    const report = await auditProject(
+      createInMemorySource({
+        ...base,
+        Dockerfile: "FROM node:20-alpine AS builder\nFROM node:20-alpine AS runner\nUSER app\n",
+      }),
+    );
+
+    expect(report.findings.map((item) => item.id)).not.toContain("docker-unpinned-base");
+  });
+
+  it("flags COPY . . only when there is no .dockerignore", async () => {
+    const dockerfile =
+      "FROM node:20-alpine AS builder\nCOPY . .\nFROM node:20-alpine AS runner\nUSER app\n";
+
+    const without = await auditProject(createInMemorySource({ ...base, Dockerfile: dockerfile }));
+    const withIgnore = await auditProject(
+      createInMemorySource({ ...base, Dockerfile: dockerfile, ".dockerignore": "node_modules\n" }),
+    );
+
+    expect(without.findings.map((i) => i.id)).toContain("docker-copy-all");
+    expect(withIgnore.findings.map((i) => i.id)).not.toContain("docker-copy-all");
+  });
+
+  it("flags a file fetched over the network at build time", async () => {
+    const report = await auditProject(
+      createInMemorySource({
+        ...base,
+        Dockerfile:
+          "FROM node:20-alpine AS a\nADD https://example.com/tool.tar.gz /tmp/\nFROM node:20-alpine AS b\nUSER app\n",
+      }),
+    );
+
+    expect(report.findings.map((i) => i.id)).toContain("docker-remote-add");
+  });
+
+  it("flags a dependency installed from git", async () => {
+    const report = await auditProject(
+      createInMemorySource({
+        ...base,
+        "package.json": JSON.stringify({
+          name: "fixture",
+          engines: { node: ">=20" },
+          dependencies: { good: "^1.0.0", risky: "git+https://example.com/pkg.git" },
+        }),
+      }),
+    );
+
+    const finding = report.findings.find((i) => i.id === "deps-remote-source");
+    expect(finding).toBeDefined();
+    expect(finding!.evidence).toContain("risky");
+    expect(finding!.evidence).not.toContain("good");
+  });
+
+  it("accepts the /node_modules form that every Next template writes", async () => {
+    const report = await auditProject(
+      createInMemorySource({ ...base, ".gitignore": "/node_modules\n.env*\n" }),
+    );
+
+    expect(report.findings.map((i) => i.id)).not.toContain("gitignore-node-modules");
+  });
+
+  it("flags a .gitignore that does not cover node_modules", async () => {
+    const report = await auditProject(
+      createInMemorySource({ ...base, ".gitignore": ".env*\n" }),
+    );
+
+    expect(report.findings.map((i) => i.id)).toContain("gitignore-node-modules");
+  });
+});

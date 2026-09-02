@@ -25,28 +25,16 @@ This matters more than a feature list, so it comes first.
 
 | Area | Check |
 | --- | --- |
-| Docker | multi-stage build, slim base image, non-root `USER`, `npm ci` vs `npm install` |
+| Docker | multi-stage build, slim base image, pinned base tag, non-root `USER`, `npm ci` vs `npm install`, `ADD` over the network, `COPY . .` without a `.dockerignore` |
 | TypeScript | whether `compilerOptions.strict` is enabled |
-| Dependencies | a lockfile is committed (npm, pnpm, yarn or bun), Node version pinned via `engines` |
-| Security | `.env` files not covered by `.gitignore` |
+| Dependencies | a lockfile is committed (npm, pnpm, yarn or bun), Node version pinned via `engines`, dependencies resolved from git or a URL |
+| Security | `.env` files and `node_modules` not covered by `.gitignore` |
 | Advisories | installed versions from `package-lock.json` queried against the npm advisory database |
 
 The health score is `100` minus a penalty for each finding — 15 for high impact,
 8 for medium, 3 for low. When the source tree is not reachable, for example
 inside a standalone container that does not ship its own sources, the audit
 reports that it could not analyze anything rather than returning a number.
-
-**Sample data, clearly labelled as such in the UI:**
-
-- **Cloud AWS** — illustrative cost anomalies. No AWS account is connected, and
-  the project has no AWS SDK dependency. Nothing on that tab was measured.
-- **Fleet** — a fixed list of services held in memory. No service is probed over
-  the network.
-- **SaaS Org** — an example organization. There is no authentication, no tenant
-  database and no billing.
-
-These tabs exist to show the shape of the product. Each one renders a banner
-saying the data was not measured.
 
 ---
 
@@ -119,10 +107,6 @@ for a score that was not measured. Results are cached for five minutes.
 | `GET /api/sentinel/security` | npm advisories for the installed tree |
 | `GET /api/sentinel/badge` | SVG badge for this project, or `?repo=OWNER/REPO` |
 | `POST /api/sentinel/local-fix` | opens a pull request for one finding |
-| `GET /api/sentinel/analyze` | sample cloud anomalies (`mode: "sample"`) |
-| `POST /api/sentinel/fix` | a remediation plan; `executed` is always `false` |
-| `GET /api/sentinel/microservices` | sample fleet (`mode: "sample"`) |
-| `GET /api/sentinel/saas` | sample organization (`mode: "sample"`) |
 | `POST /api/webhooks/github` | rejects deliveries without a valid `x-hub-signature-256` |
 | `POST /api/revenue/checkout` | Stripe checkout; returns 503 when billing is unconfigured |
 

@@ -1,0 +1,12 @@
+# Anything listed here never enters the build context, so it can never end up
+# in an image layer. .env* is the line that matters most: the builder stage
+# runs COPY . . and would otherwise carry local credentials into the image.
+.git
+.github
+.env*
+node_modules
+.next
+tests
+docs
+plans
+*.md

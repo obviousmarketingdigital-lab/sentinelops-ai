@@ -160,7 +160,7 @@ function parseJsonc(raw: string): Record<string, unknown> | null {
   }
 }
 
-function inspectDockerfile(dockerfile: string): LocalAuditFinding[] {
+function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalAuditFinding[] {
   const findings: LocalAuditFinding[] = [];
   const fromLines = dockerfile
     .split('\n')
@@ -208,6 +208,65 @@ function inspectDockerfile(dockerfile: string): LocalAuditFinding[] {
       recommendation: 'Create an unprivileged user and add a USER instruction before CMD.',
       autoFixAvailable: false,
       evidence: 'no USER instruction in Dockerfile',
+      source: 'Dockerfile',
+    });
+  }
+
+  // A base image without a tag, or on :latest, means the same Dockerfile builds
+  // a different image tomorrow.
+  const unpinned = fromLines.filter((line) => {
+    const image = line.split(/\s+/)[1] ?? '';
+    if (image.startsWith('$')) return false;
+    const reference = image.split('@')[0];
+    const tag = reference.includes(':') ? reference.split(':').pop() : undefined;
+    return !image.includes('@sha256:') && (!tag || tag === 'latest');
+  });
+
+  if (unpinned.length > 0) {
+    findings.push({
+      id: 'docker-unpinned-base',
+      category: 'Docker',
+      title: 'Base image is not pinned to a version',
+      description:
+        'A base image with no tag, or on latest, resolves to whatever is current at build time, so the same Dockerfile produces different images over time.',
+      impact: 'Medium',
+      recommendation: 'Pin the base image to a version tag, or to a digest for an exact build.',
+      autoFixAvailable: false,
+      evidence: unpinned.join(' | '),
+      source: 'Dockerfile',
+    });
+  }
+
+  if (/^\s*COPY\s+\.\s+\.\s*$/im.test(dockerfile) && !hasDockerignore) {
+    findings.push({
+      id: 'docker-copy-all',
+      category: 'Security',
+      title: 'COPY . . without a .dockerignore',
+      description:
+        'The whole working directory is copied into the image with nothing excluded, so .env files, .git history and node_modules ship inside the container.',
+      impact: 'High',
+      recommendation: 'Add a .dockerignore covering .git, node_modules, .env* and build output.',
+      autoFixAvailable: false,
+      evidence: 'COPY . . and no .dockerignore in the project',
+      source: 'Dockerfile',
+    });
+  }
+
+  const remoteAdd = dockerfile
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^ADD\s+https?:\/\//i.test(line));
+  if (remoteAdd.length > 0) {
+    findings.push({
+      id: 'docker-remote-add',
+      category: 'Security',
+      title: 'ADD fetches a file over the network',
+      description:
+        'ADD with a URL downloads at build time without verifying what arrived, so the image contents depend on a third party staying honest and available.',
+      impact: 'Medium',
+      recommendation: 'Download with curl and verify a checksum, or vendor the file into the repository.',
+      autoFixAvailable: false,
+      evidence: remoteAdd.join(' | '),
       source: 'Dockerfile',
     });
   }
@@ -269,6 +328,8 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
   const parsedPackageJson = parseJsonc(packageJsonRaw) as {
     name?: string;
     engines?: { node?: string };
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   } | null;
 
   // Treating an unparseable package.json as an empty object would report a
@@ -296,7 +357,8 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
 
   const dockerfile = track('Dockerfile', await source.read('Dockerfile'));
   if (dockerfile) {
-    findings.push(...inspectDockerfile(dockerfile));
+    const hasDockerignore = (await source.read('.dockerignore')) !== null;
+    findings.push(...inspectDockerfile(dockerfile, hasDockerignore));
   } else {
     notes.push('No Dockerfile found, so container checks were skipped.');
   }
@@ -365,7 +427,54 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     });
   }
 
+  // A dependency resolved from git or a URL bypasses the registry, so nothing
+  // pins what it contains and no advisory database covers it.
+  const allDeps: Record<string, string> = {
+    ...(packageJson.dependencies ?? {}),
+    ...(packageJson.devDependencies ?? {}),
+  };
+  const remoteDeps = Object.entries(allDeps)
+    .filter(([, spec]) => /^(git\+|git:|https?:|github:|file:)/i.test(spec))
+    .map(([name, spec]) => `${name}: ${spec}`);
+
+  if (remoteDeps.length > 0) {
+    findings.push({
+      id: 'deps-remote-source',
+      category: 'Dependencies',
+      title: 'Dependency installed from outside the registry',
+      description:
+        'A dependency pointing at git, a URL or a local path is not covered by the npm advisory database and can change without a version bump.',
+      impact: 'Medium',
+      recommendation: 'Publish the package to a registry, or vendor it and pin the exact commit.',
+      autoFixAvailable: false,
+      evidence: remoteDeps.join(' | '),
+      source: 'package.json',
+    });
+  }
+
   const gitignore = track('.gitignore', await source.read('.gitignore'));
+
+  // "/node_modules" is what every Next and CRA template writes, and it ignores
+  // the directory just as well as the bare name. Demanding one spelling would
+  // report a false finding on most of the ecosystem.
+  const ignoresNodeModules =
+    !!gitignore && /^\s*(?:\*\*\/)?\/?node_modules\/?\s*$/m.test(gitignore);
+
+  if (gitignore && !ignoresNodeModules) {
+    findings.push({
+      id: 'gitignore-node-modules',
+      category: 'Security',
+      title: 'node_modules is not ignored by git',
+      description:
+        'Without that rule the dependency tree can be committed, which bloats the repository and ships whatever was installed locally.',
+      impact: 'Low',
+      recommendation: 'Add node_modules to .gitignore.',
+      autoFixAvailable: false,
+      evidence: 'no node_modules rule in .gitignore',
+      source: '.gitignore',
+    });
+  }
+
   const ignoresEnv = !!gitignore && /^\s*\.env/m.test(gitignore);
   for (const envFile of ['.env', '.env.local', '.env.production']) {
     const present = await source.read(envFile);
