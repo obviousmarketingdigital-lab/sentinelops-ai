@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { LocalAuditReport } from "@/lib/local-project-analyzer";
 import type { SecurityScanResult } from "@/lib/security-scanner";
+import { toAgentPrompt } from "@/lib/report-text";
 
 type Tab = "findings" | "advisories";
 
@@ -43,6 +44,7 @@ export function SentinelDashboard() {
   // When set, both tabs describe this repository instead of the server's own
   // directory, so the panels can never disagree about what they are showing.
   const [target, setTarget] = useState<{ owner: string; repo: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const log = useCallback((line: string) => {
     setActivity((prev) => [line, ...prev].slice(0, 40));
@@ -142,6 +144,24 @@ export function SentinelDashboard() {
     setRepoInput("");
     setRepoError(null);
     setTarget(null);
+  }
+
+  async function copyForAgent() {
+    if (!report) return;
+    const text = toAgentPrompt(report, scan);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      log("Report copied. Paste it into a coding agent.");
+      window.setTimeout(() => setCopied(false), 2500);
+    } catch {
+      // Clipboard access can be refused; the report is useless if it cannot
+      // leave the page, so fall back to a window the reader can select from.
+      const blob = new Blob([text], { type: "text/plain" });
+      window.open(URL.createObjectURL(blob), "_blank");
+      log("Clipboard unavailable. Opened the report in a new tab instead.");
+    }
   }
 
   async function openPullRequest(id: string) {
@@ -265,6 +285,20 @@ export function SentinelDashboard() {
                     </span>
                   )}
                 </p>
+              )}
+
+              {report?.analyzable && (
+                <div className="mt-4 flex items-center gap-4">
+                  <button
+                    onClick={copyForAgent}
+                    className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+                  >
+                    {copied ? "copied" : "copy for your agent"}
+                  </button>
+                  <span className="font-mono text-[11px] text-[var(--ink-faint)]">
+                    paste into Claude Code, Cursor or any coding agent
+                  </span>
+                </div>
               )}
 
               <div className="mt-6">
