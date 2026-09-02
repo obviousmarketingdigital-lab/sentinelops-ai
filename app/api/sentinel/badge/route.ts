@@ -1,45 +1,68 @@
 import { NextResponse } from 'next/server';
-import { auditLocalProject } from '@/lib/local-project-analyzer';
+import { auditLocalProject, auditProject } from '@/lib/local-project-analyzer';
+import { createGitHubSource, inspectRepositoryVisibility } from '@/lib/project-source';
+import { BADGE_COLORS, badgeStateFor, renderBadge, type BadgeState } from '@/lib/badge';
+import { readCache, writeCache } from '@/lib/audit-cache';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  const report = await auditLocalProject();
-  const label = report.healthScore === null ? 'n/a' : `${report.healthScore}/100`;
-  const color =
-    report.healthScore === null
-      ? '#5b666e'
-      : report.healthScore > 80
-        ? '#7c9c88'
-        : report.healthScore > 60
-          ? '#c8763e'
-          : '#a8443a';
+const SEGMENT = /^[A-Za-z0-9._-]+$/;
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="140" height="20" role="img" aria-label="Sentinel: ${label}">
-  <linearGradient id="b" x2="0" y2="100%">
-    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-    <stop offset="1" stop-opacity=".1"/>
-  </linearGradient>
-  <mask id="a">
-    <rect width="140" height="20" rx="3" fill="#fff"/>
-  </mask>
-  <g mask="url(#a)">
-    <rect width="65" height="20" fill="#12161a"/>
-    <rect x="65" width="75" height="20" fill="${color}"/>
-    <rect width="140" height="20" fill="url(#b)"/>
-  </g>
-  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
-    <text x="32.5" y="15" fill="#010101" fill-opacity=".3">sentinel</text>
-    <text x="32.5" y="14" fill="#e6eaed">sentinel</text>
-    <text x="102.5" y="15" fill="#010101" fill-opacity=".3">${label}</text>
-    <text x="102.5" y="14" fill="#ffffff">${label}</text>
-  </g>
-</svg>`;
+function isSafeSegment(value: string): boolean {
+  return SEGMENT.test(value) && value !== '.' && value !== '..';
+}
 
-  return new NextResponse(svg, {
+/**
+ * A badge is an image in someone else's README. It always answers 200 with an
+ * SVG, because a broken image tells the reader nothing; the failure is written
+ * on the badge instead.
+ */
+function svg(state: BadgeState, cacheSeconds: number) {
+  return new NextResponse(renderBadge(state), {
     headers: {
       'Content-Type': 'image/svg+xml',
-      'Cache-Control': 'no-cache',
+      // README proxies cache aggressively; a few minutes keeps the badge fresh
+      // without spending the GitHub rate limit on every page view.
+      'Cache-Control': `public, max-age=${cacheSeconds}, s-maxage=${cacheSeconds}`,
     },
   });
+}
+
+export async function GET(request: Request) {
+  const repoParam = new URL(request.url).searchParams.get('repo');
+
+  if (!repoParam) {
+    const report = await auditLocalProject();
+    return svg(badgeStateFor(report), 0);
+  }
+
+  const [owner, repo, ...rest] = repoParam.split('/');
+
+  if (!owner || !repo || rest.length > 0 || !isSafeSegment(owner) || !isSafeSegment(repo)) {
+    return svg({ label: 'bad repo', color: BADGE_COLORS.unknown }, 300);
+  }
+
+  const cacheKey = `badge:${owner}/${repo}`;
+  const cached = readCache<BadgeState>(cacheKey);
+  if (cached) return svg(cached, 300);
+
+  try {
+    const token = process.env.GITHUB_TOKEN;
+    const visibility = await inspectRepositoryVisibility(owner, repo, token);
+
+    if (!visibility.exists || !visibility.isPublic) {
+      const state = { label: 'not found', color: BADGE_COLORS.unknown };
+      writeCache<BadgeState>(cacheKey, state);
+      return svg(state, 300);
+    }
+
+    const report = await auditProject(createGitHubSource({ owner, repo, token }));
+    const state = badgeStateFor(report);
+    writeCache<BadgeState>(cacheKey, state);
+    return svg(state, 300);
+  } catch {
+    // Not cached: a rate limit or a network blip should not pin "unavailable"
+    // onto a repository for the next five minutes.
+    return svg({ label: 'unavailable', color: BADGE_COLORS.unknown }, 60);
+  }
 }

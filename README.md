@@ -3,6 +3,7 @@
 > A static audit agent for Node projects. It reads the repository it is pointed at,
 > reports what it actually finds, and can open a pull request describing each finding.
 
+[![Sentinel](https://sentinelops-ai-fuzj.onrender.com/api/sentinel/badge?repo=obviousmarketingdigital-lab/sentinelops-ai)](https://sentinelops-ai-fuzj.onrender.com/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16.3.3-black?style=flat&logo=next.js)](https://nextjs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -93,6 +94,21 @@ it the history lives on the container filesystem and is lost on every restart.
 
 ---
 
+## Badge
+
+Any public repository can display its own score:
+
+```markdown
+![Sentinel](https://sentinelops-ai-fuzj.onrender.com/api/sentinel/badge?repo=OWNER/REPO)
+```
+
+The badge always answers with an image, because a broken image in a README
+says nothing. When a repository cannot be reached it reads `not found`, and a
+project the audit cannot analyse reads `n/a` in grey — never a passing colour
+for a score that was not measured. Results are cached for five minutes.
+
+---
+
 ## Endpoints
 
 | Route | Returns |
@@ -101,7 +117,7 @@ it the history lives on the container filesystem and is lost on every restart.
 | `GET /api/sentinel/local-audit` | the static audit of the working directory |
 | `POST /api/sentinel/audit-repo` | audits a GitHub repository: `{ owner, repo, ref? }` |
 | `GET /api/sentinel/security` | npm advisories for the installed tree |
-| `GET /api/sentinel/badge` | SVG health badge |
+| `GET /api/sentinel/badge` | SVG badge for this project, or `?repo=OWNER/REPO` |
 | `POST /api/sentinel/local-fix` | opens a pull request for one finding |
 | `GET /api/sentinel/analyze` | sample cloud anomalies (`mode: "sample"`) |
 | `POST /api/sentinel/fix` | a remediation plan; `executed` is always `false` |
