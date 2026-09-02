@@ -190,17 +190,22 @@ export function SentinelDashboard() {
   return (
     <div
       style={THEME}
-      className="relative min-h-dvh bg-[var(--ground)] text-[var(--ink)] font-sans antialiased selection:bg-[var(--ink)] selection:text-[var(--ground)]"
+      className="min-h-dvh bg-[var(--ground)] text-[var(--ink)] font-sans antialiased selection:bg-[var(--ink)] selection:text-[var(--ground)]"
     >
-      {/* globals.css paints the body in the light palette that belongs to the
-          other product in this repo, which would show through on short pages
-          and when overscrolling. */}
-      <div aria-hidden className="fixed inset-0 -z-10 bg-[var(--ground)]" />
-
       <div className="mx-auto w-full max-w-5xl px-6 py-12 md:px-10 md:py-16">
         <header className="flex flex-col gap-8 sm:flex-row sm:items-baseline sm:justify-between">
           <div className="flex items-baseline gap-4">
-            <span className="font-mono text-sm lowercase tracking-[0.42em]">sentinel</span>
+            {/* The caret is what a compiler prints under the exact token it is
+                talking about. It says "this one", which is the whole claim. */}
+            <span className="relative font-mono text-sm lowercase tracking-[0.42em]">
+              sentinel
+              <span
+                aria-hidden
+                className="absolute left-0 top-full -mt-0.5 text-base leading-none text-[var(--flag)]"
+              >
+                ^
+              </span>
+            </span>
             <img
               src="/api/sentinel/badge?repo=obviousmarketingdigital-lab/sentinelops-ai"
               alt="Sentinel health badge for this repository"
@@ -226,8 +231,11 @@ export function SentinelDashboard() {
         </header>
 
         <section className="mt-16">
-          <h1 className="max-w-xl text-2xl font-normal leading-snug tracking-tight md:text-3xl">
-            Point it at a repository. It reads the files and reports only what it found.
+          <h1 className="max-w-2xl text-3xl font-semibold leading-[1.15] tracking-[-0.025em] md:text-5xl">
+            Point it at a repository.
+            <span className="block text-[var(--ink-dim)]">
+              It reads the files and reports only what it found.
+            </span>
           </h1>
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
