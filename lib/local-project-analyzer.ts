@@ -23,6 +23,8 @@ export interface LocalAuditReport {
   analyzable: boolean;
   filesInspected: string[];
   filesMissing: string[];
+  /** Files that were read but could not be parsed, so nothing was concluded. */
+  filesUnreadable: string[];
   healthScore: number | null;
   findingsCount: number;
   findings: LocalAuditFinding[];
@@ -99,11 +101,48 @@ function stripJsonc(raw: string): string {
       continue;
     }
 
-    // Drop a trailing comma before a closing brace or bracket.
+    out += char;
+  }
+
+  return out;
+}
+
+/**
+ * Removes commas that sit before a closing brace or bracket.
+ *
+ * This runs after comments are stripped, so a comma followed by a comment and
+ * then a brace is handled: looking ahead in the original text would still see
+ * the comment and keep the comma, which made the parse fail.
+ */
+function removeTrailingCommas(text: string): string {
+  let out = '';
+  let inString = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (inString) {
+      out += char;
+      if (char === '\\') {
+        out += text[i + 1] ?? '';
+        i += 1;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      out += char;
+      continue;
+    }
+
     if (char === ',') {
-      const rest = raw.slice(i + 1);
-      const nextMeaningful = rest.match(/^\s*([}\]])/);
-      if (nextMeaningful) continue;
+      // Scan forward without allocating a substring for every comma.
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j += 1;
+      if (text[j] === '}' || text[j] === ']') continue;
     }
 
     out += char;
@@ -112,9 +151,10 @@ function stripJsonc(raw: string): string {
   return out;
 }
 
+/** Returns null only when the text is not valid JSON with comments. */
 function parseJsonc(raw: string): Record<string, unknown> | null {
   try {
-    return JSON.parse(stripJsonc(raw));
+    return JSON.parse(removeTrailingCommas(stripJsonc(raw)));
   } catch {
     return null;
   }
@@ -195,6 +235,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
   const timestamp = new Date().toISOString();
   const filesInspected: string[] = [];
   const filesMissing: string[] = [];
+  const filesUnreadable: string[] = [];
   const findings: LocalAuditFinding[] = [];
   const notes: string[] = [];
 
@@ -214,6 +255,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       analyzable: false,
       filesInspected,
       filesMissing,
+      filesUnreadable,
       healthScore: null,
       findingsCount: 0,
       findings: [],
@@ -224,10 +266,32 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     };
   }
 
-  const packageJson = (parseJsonc(packageJsonRaw) ?? {}) as {
+  const parsedPackageJson = parseJsonc(packageJsonRaw) as {
     name?: string;
     engines?: { node?: string };
-  };
+  } | null;
+
+  // Treating an unparseable package.json as an empty object would report a
+  // missing "engines" field on a project that declares one. Not being able to
+  // read a file is its own outcome, never a finding about the project.
+  if (!parsedPackageJson) {
+    filesUnreadable.push('package.json');
+    return {
+      projectName: path.basename(source.origin),
+      origin: source.origin,
+      timestamp,
+      analyzable: false,
+      filesInspected,
+      filesMissing,
+      filesUnreadable,
+      healthScore: null,
+      findingsCount: 0,
+      findings: [],
+      notes: [`package.json at ${source.origin} could not be parsed, so no checks ran.`],
+    };
+  }
+
+  const packageJson = parsedPackageJson;
   const projectName = packageJson.name ?? path.basename(source.origin);
 
   const dockerfile = track('Dockerfile', await source.read('Dockerfile'));
@@ -240,20 +304,26 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
   const tsconfigRaw = track('tsconfig.json', await source.read('tsconfig.json'));
   if (tsconfigRaw) {
     const tsconfig = parseJsonc(tsconfigRaw) as { compilerOptions?: { strict?: boolean } } | null;
-    const strict = tsconfig?.compilerOptions?.strict;
-    if (strict !== true) {
-      findings.push({
-        id: 'ts-strict-off',
-        category: 'TypeScript',
-        title: 'TypeScript strict mode is disabled',
-        description:
-          'compilerOptions.strict is not set to true, so null checks and implicit any are not enforced.',
-        impact: 'Medium',
-        recommendation: 'Set "strict": true in tsconfig.json and fix the errors it surfaces.',
-        autoFixAvailable: false,
-        evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
-        source: 'tsconfig.json',
-      });
+
+    if (!tsconfig) {
+      filesUnreadable.push('tsconfig.json');
+      notes.push('tsconfig.json could not be parsed, so the strict mode check was skipped.');
+    } else {
+      const strict = tsconfig.compilerOptions?.strict;
+      if (strict !== true) {
+        findings.push({
+          id: 'ts-strict-off',
+          category: 'TypeScript',
+          title: 'TypeScript strict mode is disabled',
+          description:
+            'compilerOptions.strict is not set to true, so null checks and implicit any are not enforced.',
+          impact: 'Medium',
+          recommendation: 'Set "strict": true in tsconfig.json and fix the errors it surfaces.',
+          autoFixAvailable: false,
+          evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
+          source: 'tsconfig.json',
+        });
+      }
     }
   }
 
@@ -323,6 +393,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     analyzable: true,
     filesInspected,
     filesMissing,
+    filesUnreadable,
     healthScore: Math.max(0, Math.min(100, 100 - penalty)),
     findingsCount: findings.length,
     findings,

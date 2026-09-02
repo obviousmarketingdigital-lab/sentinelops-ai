@@ -35,8 +35,10 @@ export function SentinelDashboard() {
     "[INIT] Sentinel audit agent ready.",
   ]);
   const [repoInput, setRepoInput] = useState("");
-  const [auditingRepo, setAuditingRepo] = useState(false);
   const [repoError, setRepoError] = useState<string | null>(null);
+  // When set, every tab describes this repository instead of the server's own
+  // directory, so the panels can never disagree about what they are showing.
+  const [auditTarget, setAuditTarget] = useState<{ owner: string; repo: string } | null>(null);
 
   const log = useCallback((line: string) => {
     setTerminalLogs((prev) => [line, ...prev].slice(0, 60));
@@ -87,6 +89,31 @@ export function SentinelDashboard() {
         if (data.success) setReport(data.report);
       } else if (activeTab === "fleet") {
         await fetchFleet();
+      } else if (auditTarget) {
+        // One request feeds both the audit and the advisory tab, so switching
+        // between them cannot replace the repository with this project.
+        log(`[AUDIT] Reading github.com/${auditTarget.owner}/${auditTarget.repo}...`);
+        const res = await fetch("/api/sentinel/audit-repo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(auditTarget),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+          setRepoError(data.error ?? "The repository could not be audited.");
+          log(`[AUDIT] Failed: ${data.error}`);
+          setAuditTarget(null);
+          return;
+        }
+
+        setLocalReport(data.report);
+        setScan(data.scan);
+        log(
+          data.report.analyzable
+            ? `[AUDIT] ${data.report.findingsCount} finding(s) from ${data.report.filesInspected.length} file(s) in ${data.report.origin}.`
+            : `[AUDIT] Could not analyze ${data.report.origin}.`,
+        );
       } else if (activeTab === "security") {
         log("[SCAN] Querying the npm advisory database for the installed dependency tree...");
         const res = await fetch("/api/sentinel/security");
@@ -116,7 +143,7 @@ export function SentinelDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [activeTab, fetchFleet, log]);
+  }, [activeTab, auditTarget, fetchFleet, log]);
 
   useEffect(() => {
     loadData();
@@ -161,44 +188,26 @@ export function SentinelDashboard() {
     }
   }
 
-  async function handleAuditRepo() {
-    const match = repoInput.trim().replace(/^https?:\/\/github\.com\//i, "").match(/^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+  function handleAuditRepo() {
+    const match = repoInput
+      .trim()
+      .replace(/^https?:\/\/github\.com\//i, "")
+      .match(/^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+
     if (!match) {
       setRepoError("Use the owner/repo form, for example vercel/next.js.");
       return;
     }
 
-    const [, owner, repo] = match;
-    setAuditingRepo(true);
+    // Setting the target is enough: the effect reloads whichever tab is open.
     setRepoError(null);
-    log(`[AUDIT] Reading github.com/${owner}/${repo}...`);
+    setAuditTarget({ owner: match[1], repo: match[2] });
+  }
 
-    try {
-      const res = await fetch("/api/sentinel/audit-repo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ owner, repo }),
-      });
-      const data = await res.json();
-
-      if (!data.success) {
-        setRepoError(data.error ?? "The repository could not be audited.");
-        log(`[AUDIT] Failed: ${data.error}`);
-        return;
-      }
-
-      setLocalReport(data.report);
-      setScan(data.scan);
-      log(
-        data.report.analyzable
-          ? `[AUDIT] ${data.report.findingsCount} finding(s) from ${data.report.filesInspected.length} file(s) in ${data.report.origin}.`
-          : `[AUDIT] No package.json found in ${data.report.origin}.`,
-      );
-    } catch {
-      setRepoError("The request failed.");
-    } finally {
-      setAuditingRepo(false);
-    }
+  function handleAuditThisProject() {
+    setRepoInput("");
+    setRepoError(null);
+    setAuditTarget(null);
   }
 
   async function handleAutoFix(id: string) {
@@ -294,17 +303,13 @@ export function SentinelDashboard() {
                 />
                 <button
                   onClick={handleAuditRepo}
-                  disabled={auditingRepo}
+                  disabled={loading}
                   className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs transition disabled:opacity-50 cursor-pointer whitespace-nowrap"
                 >
-                  {auditingRepo ? "Reading..." : "Run audit"}
+                  {loading ? "Reading..." : "Run audit"}
                 </button>
                 <button
-                  onClick={() => {
-                    setRepoInput("");
-                    setRepoError(null);
-                    loadData();
-                  }}
+                  onClick={handleAuditThisProject}
                   className="px-5 py-2.5 rounded-xl border border-slate-700 text-slate-300 font-mono text-xs hover:border-slate-500 transition cursor-pointer whitespace-nowrap"
                 >
                   This project

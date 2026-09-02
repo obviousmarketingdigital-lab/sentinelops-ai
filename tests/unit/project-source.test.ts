@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { auditProject } from "@/lib/local-project-analyzer";
 import { createInMemorySource } from "@/lib/project-source";
 import { isSignatureValid } from "@/app/api/webhooks/github/route";
+import { isSafeRef, isSafeSegment } from "@/app/api/sentinel/audit-repo/route";
 
 describe("source-agnostic auditing", () => {
   it("audits files that never touch the local disk", async () => {
@@ -50,6 +51,65 @@ describe("source-agnostic auditing", () => {
     expect(report.healthScore).toBeNull();
     expect(report.findings).toHaveLength(0);
     expect(report.notes.join(" ")).toContain("empty-source");
+  });
+});
+
+describe("reporting what could not be measured", () => {
+  it("parses a tsconfig with a trailing comma before a comment", async () => {
+    const source = createInMemorySource({
+      "package.json": JSON.stringify({ name: "fixture", engines: { node: ">=20" } }),
+      "package-lock.json": "{}",
+      "tsconfig.json": '{\n "compilerOptions": {\n  "strict": true, // liga\n }\n}',
+    });
+
+    const report = await auditProject(source);
+
+    expect(report.filesUnreadable).not.toContain("tsconfig.json");
+    expect(report.findings.map((finding) => finding.id)).not.toContain("ts-strict-off");
+  });
+
+  it("does not call an unparseable tsconfig a disabled strict mode", async () => {
+    const source = createInMemorySource({
+      "package.json": JSON.stringify({ name: "fixture", engines: { node: ">=20" } }),
+      "package-lock.json": "{}",
+      "tsconfig.json": '{ "compilerOptions": { "strict": true }',
+    });
+
+    const report = await auditProject(source);
+
+    expect(report.findings.map((finding) => finding.id)).not.toContain("ts-strict-off");
+    expect(report.filesUnreadable).toContain("tsconfig.json");
+    expect(report.notes.join(" ")).toContain("could not be parsed");
+  });
+
+  it("refuses to analyze when package.json cannot be parsed", async () => {
+    const source = createInMemorySource({ "package.json": "{ not json" });
+
+    const report = await auditProject(source);
+
+    expect(report.analyzable).toBe(false);
+    expect(report.healthScore).toBeNull();
+    expect(report.findings).toHaveLength(0);
+    expect(report.filesUnreadable).toContain("package.json");
+  });
+});
+
+describe("repository path validation", () => {
+  it("accepts ordinary owner and repo names", () => {
+    expect(isSafeSegment("vercel")).toBe(true);
+    expect(isSafeSegment("next.js")).toBe(true);
+  });
+
+  it("rejects dot segments that would traverse the API path", () => {
+    expect(isSafeSegment(".")).toBe(false);
+    expect(isSafeSegment("..")).toBe(false);
+    expect(isSafeSegment("a/b")).toBe(false);
+  });
+
+  it("rejects refs containing dot segments", () => {
+    expect(isSafeRef("main")).toBe(true);
+    expect(isSafeRef("release/1.0")).toBe(true);
+    expect(isSafeRef("../secret")).toBe(false);
   });
 });
 

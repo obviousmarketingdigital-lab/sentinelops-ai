@@ -36,7 +36,9 @@ export async function POST(request: Request) {
     }
 
     const stripe = new Stripe(stripeSecret, { apiVersion: '2025-02-28.acacia' as never });
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3009';
+    // Falling back to a hard-coded localhost would send a paying customer to
+    // their own machine when the deployment forgets the variable.
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
