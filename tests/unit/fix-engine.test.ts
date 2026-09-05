@@ -81,6 +81,62 @@ describe('Dockerfile fixes', () => {
     expect(plan.refused[0].reason).toContain('may not exist');
   });
 
+  it('judges the final stage, not the builder, in a multi-stage build', async () => {
+    // Compiles on node and serves from nginx: the container that runs is nginx,
+    // which has no node user. Reading any FROM would conclude the opposite.
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20-alpine AS builder',
+        'RUN npm run build',
+        '',
+        'FROM nginx:alpine',
+        'COPY --from=builder /app/dist /usr/share/nginx/html',
+        'CMD ["nginx", "-g", "daemon off;"]',
+      ].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('nginx:alpine');
+    expect(plan.refused[0].reason).toContain('not an official');
+  });
+
+  it('follows a stage alias back to the image it was built from', async () => {
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20-alpine AS base',
+        'WORKDIR /app',
+        '',
+        'FROM base',
+        'CMD ["node", "server.js"]',
+      ].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.applied).toHaveLength(1);
+    expect(plan.files[0].patched).toContain('USER node');
+  });
+
+  it('refuses when the container starts through an entrypoint script', async () => {
+    const source = createInMemorySource({
+      Dockerfile: 'FROM node:20\nENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]\n',
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('entrypoint script');
+  });
+
+  it('still patches an ENTRYPOINT that runs the binary directly', async () => {
+    const source = createInMemorySource({
+      Dockerfile: 'FROM node:20\nENTRYPOINT ["node", "server.js"]\n',
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.applied).toHaveLength(1);
+    expect(plan.files[0].patched).toContain('USER node');
+  });
+
   it('rewrites npm install to npm ci when a lockfile is committed', async () => {
     const source = createInMemorySource({
       Dockerfile: NODE_DOCKERFILE,

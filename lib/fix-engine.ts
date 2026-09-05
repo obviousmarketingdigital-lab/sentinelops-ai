@@ -273,21 +273,59 @@ type FixOutcome = { ok: true; rationale: string; filePath: string } | { ok: fals
 type Fixer = (finding: LocalAuditFinding, copy: WorkingCopy) => Promise<FixOutcome>;
 
 /**
+ * Resolves the image the *last* stage is built on, following stage aliases.
+ *
+ * Only the final stage becomes the running container. A multi-stage build that
+ * compiles on `node:20` and then serves from `nginx` is a node build producing
+ * an nginx image, and a fix that reads any FROM in the file would conclude the
+ * opposite. `FROM builder` is followed back through `AS` names — bounded,
+ * because a malformed file can name a cycle.
+ */
+function finalStageBase(dockerfile: string): string | null {
+  const stages: Array<{ image: string; alias?: string }> = [];
+
+  for (const line of splitLines(dockerfile)) {
+    const match = line.match(/^\s*FROM\s+(\S+)(?:\s+AS\s+(\S+))?/i);
+    if (match) stages.push({ image: match[1], alias: match[2]?.toLowerCase() });
+  }
+
+  if (stages.length === 0) return null;
+
+  let image = stages[stages.length - 1].image;
+
+  for (let hops = 0; hops < stages.length; hops += 1) {
+    const referenced = stages.find((stage) => stage.alias === image.toLowerCase());
+    if (!referenced) return image;
+    image = referenced.image;
+  }
+
+  return null;
+}
+
+/**
  * Adds USER before the process starts.
  *
- * Guarded on an official node base image: `USER node` on an image without that
- * account produces a container that will not start, which is a worse outcome
- * than the finding it closes.
+ * Two guards, both learned from real Dockerfiles. The base image of the final
+ * stage must be an official node image, because `USER node` on an image without
+ * that account produces a container that will not start — a worse outcome than
+ * the finding it closes. And the process being switched must not be an
+ * entrypoint script: those routinely chown a volume or create a directory
+ * before dropping privileges themselves, and whether this one needs root is a
+ * fact about a file the audit never read.
  */
 const fixDockerRootUser: Fixer = async (finding, copy) => {
   const dockerfile = await copy.read('Dockerfile');
   if (dockerfile === null) return { ok: false, reason: 'Dockerfile could not be read.' };
 
-  if (!/^FROM\s+\S*node[:\s]/im.test(dockerfile)) {
+  const base = finalStageBase(dockerfile);
+
+  if (base === null || !/^\S*node(:|$)/i.test(base)) {
     return {
       ok: false,
       reason:
-        'The base image is not an official node image, so the unprivileged user this fix would switch to may not exist. Add the user your image provides.',
+        `The final stage is built on ${base ?? 'an image that could not be resolved'}, not an official ` +
+        'node image, so the unprivileged user this fix would switch to may not exist. Add the user that ' +
+        'image provides instead.',
     };
   }
 
@@ -301,13 +339,25 @@ const fixDockerRootUser: Fixer = async (finding, copy) => {
     return { ok: false, reason: 'No CMD or ENTRYPOINT to place the USER instruction before.' };
   }
 
+  if (/^\s*ENTRYPOINT\s/i.test(lines[target]) && /\.sh\b/.test(lines[target])) {
+    return {
+      ok: false,
+      reason:
+        'The container starts through an entrypoint script, which commonly prepares a volume or ' +
+        'directory as root before dropping privileges itself. Whether it needs root is written in that ' +
+        'script, which this audit does not read.',
+    };
+  }
+
   lines.splice(target, 0, 'USER node', '');
   await copy.write('Dockerfile', lines.join(lineEnding(dockerfile)), finding.id);
 
   return {
     ok: true,
     filePath: 'Dockerfile',
-    rationale: 'Added `USER node` before the final CMD, so the process drops root before it starts.',
+    rationale: `Added \`USER node\` before the final ${
+      /^\s*ENTRYPOINT\s/i.test(lines[target + 2] ?? '') ? 'ENTRYPOINT' : 'CMD'
+    }, so the process drops root before it starts. The final stage runs on ${base}, which provides that user.`,
   };
 };
 
@@ -388,7 +438,20 @@ const fixDockerCopyAll: Fixer = async (finding, copy) => {
   };
 };
 
-/** Turns on strict as a text edit, so comments and formatting in tsconfig survive. */
+/**
+ * Turns on strict as a text edit, so comments and formatting in tsconfig survive.
+ *
+ * This is the one fix here whose blast radius is the whole project rather than
+ * the line it changes: every file is type-checked again under stricter rules,
+ * and on a codebase that never had it on, the build can fail with hundreds of
+ * errors. The edit is still correct, so it is offered — but the rationale says
+ * plainly that it is unverified, because a reader who merges this on the
+ * strength of a green checkmark has been misled by us.
+ */
+const STRICT_CAVEAT =
+  ' This re-checks every file in the project, so run a type check before merging: unlike the other ' +
+  'fixes here, its effect is not confined to the lines it changed.';
+
 const fixTsStrict: Fixer = async (finding, copy) => {
   const tsconfig = await copy.read('tsconfig.json');
   if (tsconfig === null) return { ok: false, reason: 'tsconfig.json could not be read.' };
@@ -399,7 +462,7 @@ const fixTsStrict: Fixer = async (finding, copy) => {
     return {
       ok: true,
       filePath: 'tsconfig.json',
-      rationale: 'Set `"strict": true` in compilerOptions.',
+      rationale: `Set \`"strict": true\` in compilerOptions.${STRICT_CAVEAT}`,
     };
   }
 
@@ -417,7 +480,7 @@ const fixTsStrict: Fixer = async (finding, copy) => {
   return {
     ok: true,
     filePath: 'tsconfig.json',
-    rationale: 'Added `"strict": true` to compilerOptions.',
+    rationale: `Added \`"strict": true\` to compilerOptions.${STRICT_CAVEAT}`,
   };
 };
 
