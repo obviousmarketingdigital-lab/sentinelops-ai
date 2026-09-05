@@ -296,15 +296,43 @@ function finalStageBase(dockerfile: string): string | null {
 }
 
 /**
+ * Whether an image reference is Docker Hub's own `node`.
+ *
+ * The `node` user this fix switches to is an account the official image
+ * creates. Matching "anything ending in node" is not close enough: growthbook
+ * builds on `dhi.io/node`, a Docker Hardened Image that already runs unprivileged
+ * and provides `nonroot` rather than `node`, and `mynode` would have matched too.
+ * Only the four spellings of the official repository count, and everything else
+ * is refused with the image named so the reader can see what was rejected.
+ */
+function isOfficialNodeImage(image: string): boolean {
+  const name = image.split('@')[0].split(':')[0].toLowerCase();
+  return (
+    name === 'node' ||
+    name === 'library/node' ||
+    name === 'docker.io/node' ||
+    name === 'docker.io/library/node'
+  );
+}
+
+/** Whether a CMD or ENTRYPOINT hands the container to a shell rather than a binary. */
+function startsAShell(line: string): boolean {
+  if (/\.sh\b/.test(line)) return true;
+  // `CMD ["sh", "-c", "…"]` is a startup script written inline: it can migrate a
+  // database, chown a volume or start several processes, exactly like a file.
+  return /\[\s*"(?:\/bin\/|\/usr\/bin\/)?(?:sh|bash|ash|dash|zsh)"\s*,\s*"-c"/i.test(line);
+}
+
+/**
  * Adds USER before the process starts.
  *
  * Two guards, both learned from real Dockerfiles. The base image of the final
- * stage must be an official node image, because `USER node` on an image without
- * that account produces a container that will not start — a worse outcome than
- * the finding it closes. And the process being switched must not be an
- * entrypoint script: those routinely chown a volume or create a directory
- * before dropping privileges themselves, and whether this one needs root is a
- * fact about a file the audit never read.
+ * stage must be Docker Hub's own node image, because `USER node` on an image
+ * without that account produces a container that will not start — a worse
+ * outcome than the finding it closes. And the process being switched must not
+ * be a startup script, in a file or written inline: those routinely migrate a
+ * database or chown a volume before dropping privileges themselves, and whether
+ * this one needs root is a fact about something the audit never read.
  */
 const fixDockerRootUser: Fixer = async (finding, copy) => {
   const dockerfile = await copy.read('Dockerfile');
@@ -312,7 +340,7 @@ const fixDockerRootUser: Fixer = async (finding, copy) => {
 
   const base = finalStageBase(dockerfile);
 
-  if (base === null || !/^\S*node(:|$)/i.test(base)) {
+  if (base === null || !isOfficialNodeImage(base)) {
     return {
       ok: false,
       reason:
@@ -337,16 +365,17 @@ const fixDockerRootUser: Fixer = async (finding, copy) => {
   // CMD follows it; and a CMD that is itself a script carries the same risk.
   const startupScript = lines.findIndex(
     (line, index) =>
-      inFinalStage(index) && /^\s*(CMD|ENTRYPOINT)\s/i.test(line) && /\.sh\b/.test(line),
+      inFinalStage(index) && /^\s*(CMD|ENTRYPOINT)\s/i.test(line) && startsAShell(line),
   );
 
   if (startupScript !== -1) {
+    const shown = lines[startupScript].trim();
     return {
       ok: false,
       reason:
-        `The final stage starts through a shell script (${lines[startupScript].trim()}). Startup scripts ` +
-        'routinely prepare a volume or directory as root before dropping privileges themselves, and ' +
-        'whether this one needs root is written in a file this audit does not read.',
+        `The final stage hands the container to a shell (${shown.length > 120 ? `${shown.slice(0, 120)}…` : shown}). ` +
+        'Startup scripts routinely migrate a database or prepare a volume as root before dropping ' +
+        'privileges themselves, and whether this one needs root is not written in the Dockerfile.',
     };
   }
 

@@ -123,7 +123,7 @@ describe('Dockerfile fixes', () => {
     const plan = await planFixes([finding('docker-root-user')], source);
 
     expect(plan.files).toHaveLength(0);
-    expect(plan.refused[0].reason).toContain('shell script');
+    expect(plan.refused[0].reason).toContain('hands the container to a shell');
   });
 
   it('sees an entrypoint script even when CMD comes after it', async () => {
@@ -141,6 +141,52 @@ describe('Dockerfile fixes', () => {
 
     expect(plan.files).toHaveLength(0);
     expect(plan.refused[0].reason).toContain('setup.sh');
+  });
+
+  it('refuses a hardened node image from another registry', async () => {
+    // growthbook/growthbook builds on dhi.io/node — a Docker Hardened Image,
+    // which already runs unprivileged and provides `nonroot`, not `node`.
+    const source = createInMemorySource({
+      Dockerfile: ['FROM dhi.io/node:22-alpine', 'CMD ["node", "server.js"]'].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('dhi.io/node');
+  });
+
+  it('does not mistake an image merely ending in node for the official one', async () => {
+    const source = createInMemorySource({
+      Dockerfile: ['FROM mynode:20', 'CMD ["node", "server.js"]'].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+  });
+
+  it('accepts the fully qualified spellings of the official image', async () => {
+    for (const image of ['docker.io/node:20', 'library/node:20-alpine']) {
+      const source = createInMemorySource({
+        Dockerfile: [`FROM ${image}`, 'CMD ["node", "server.js"]'].join('\n'),
+      });
+      const plan = await planFixes([finding('docker-root-user')], source);
+      expect(plan.applied).toHaveLength(1);
+    }
+  });
+
+  it('refuses a CMD that hands the container to a shell inline', async () => {
+    // msgbyte/tianji ships `CMD ["sh", "-c", "… prisma migrate deploy … "]`,
+    // a startup script written inline rather than in a file.
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:22-alpine',
+        'CMD ["sh", "-c", "prisma migrate deploy && node ./dist/main.js"]',
+      ].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('hands the container to a shell');
   });
 
   it('refuses a CMD that is itself a startup script', async () => {
