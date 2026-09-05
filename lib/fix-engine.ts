@@ -330,24 +330,54 @@ const fixDockerRootUser: Fixer = async (finding, copy) => {
   }
 
   const lines = splitLines(dockerfile);
+
+  // USER applies to every instruction after it, and only the last stage is the
+  // container that runs, so both the search and the insertion stay inside it.
+  const stageStart = lines.reduce(
+    (last, line, index) => (/^\s*FROM\s/i.test(line) ? index : last),
+    -1,
+  );
+  const inFinalStage = (index: number) => index > stageStart;
+
+  // A startup script is disqualifying wherever it sits. An ENTRYPOINT runs
+  // before CMD and under the same user, so a script there counts even when a
+  // CMD follows it; and a CMD that is itself a script carries the same risk.
+  const startupScript = lines.findIndex(
+    (line, index) =>
+      inFinalStage(index) && /^\s*(CMD|ENTRYPOINT)\s/i.test(line) && /\.sh\b/.test(line),
+  );
+
+  if (startupScript !== -1) {
+    return {
+      ok: false,
+      reason:
+        `The final stage starts through a shell script (${lines[startupScript].trim()}). Startup scripts ` +
+        'routinely prepare a volume or directory as root before dropping privileges themselves, and ' +
+        'whether this one needs root is written in a file this audit does not read.',
+    };
+  }
+
   const target = lines.reduce(
-    (last, line, index) => (/^\s*(CMD|ENTRYPOINT)\s/i.test(line) ? index : last),
+    (last, line, index) =>
+      inFinalStage(index) && /^\s*(CMD|ENTRYPOINT)\s/i.test(line) ? index : last,
     -1,
   );
 
   if (target === -1) {
-    return { ok: false, reason: 'No CMD or ENTRYPOINT to place the USER instruction before.' };
-  }
-
-  if (/^\s*ENTRYPOINT\s/i.test(lines[target]) && /\.sh\b/.test(lines[target])) {
     return {
       ok: false,
-      reason:
-        'The container starts through an entrypoint script, which commonly prepares a volume or ' +
-        'directory as root before dropping privileges itself. Whether it needs root is written in that ' +
-        'script, which this audit does not read.',
+      reason: 'The final stage has no CMD or ENTRYPOINT to place the USER instruction before.',
     };
   }
+
+  const instruction = /^\s*ENTRYPOINT\s/i.test(lines[target]) ? 'ENTRYPOINT' : 'CMD';
+
+  // Files arrive owned by root unless a COPY says otherwise, so an app that
+  // writes inside its own directory will fail as a non-root user. Whether it
+  // writes is not in this file, so it is said rather than assumed.
+  const chowned = lines.some(
+    (line, index) => inFinalStage(index) && /^\s*COPY\s/i.test(line) && /--chown=/i.test(line),
+  );
 
   lines.splice(target, 0, 'USER node', '');
   await copy.write('Dockerfile', lines.join(lineEnding(dockerfile)), finding.id);
@@ -355,9 +385,13 @@ const fixDockerRootUser: Fixer = async (finding, copy) => {
   return {
     ok: true,
     filePath: 'Dockerfile',
-    rationale: `Added \`USER node\` before the final ${
-      /^\s*ENTRYPOINT\s/i.test(lines[target + 2] ?? '') ? 'ENTRYPOINT' : 'CMD'
-    }, so the process drops root before it starts. The final stage runs on ${base}, which provides that user.`,
+    rationale:
+      `Added \`USER node\` before the final ${instruction}, so the process drops root before it starts. ` +
+      `The final stage runs on ${base}, which provides that user.` +
+      (chowned
+        ? ''
+        : ' No COPY in this stage sets --chown, so files are owned by root: check that the app does not ' +
+          'write inside its own directory at runtime.'),
   };
 };
 
@@ -368,6 +402,21 @@ const fixDockerRootUser: Fixer = async (finding, copy) => {
  * exits non-zero when there is no lockfile to install from. Without one
  * committed, this "fix" would break the build on the next push.
  */
+/**
+ * True only for an `npm install` that `npm ci` is actually equivalent to.
+ *
+ * `npm ci` installs the current project from its lockfile. It takes no package
+ * argument and has no global mode, so `npm install -g @scope/cli` and
+ * `npm install lodash` are different operations entirely — rewriting either
+ * produces a command that fails immediately. Only a bare install, with flags
+ * and nothing positional, may be swapped.
+ */
+function isPlainInstall(tail: string): boolean {
+  const tokens = tail.trim().split(/\s+/).filter(Boolean);
+  return tokens.every((token) => token.startsWith('-')) &&
+    !tokens.some((token) => /^(-g|--global|--prefix(=.*)?)$/.test(token));
+}
+
 const fixDockerNpmInstall: Fixer = async (finding, copy) => {
   const dockerfile = await copy.read('Dockerfile');
   if (dockerfile === null) return { ok: false, reason: 'Dockerfile could not be read.' };
@@ -381,23 +430,81 @@ const fixDockerNpmInstall: Fixer = async (finding, copy) => {
     };
   }
 
-  const patched = dockerfile.replace(
-    /^(\s*RUN\s+(?:.*&&\s*)?)npm\s+install\b/gim,
-    (_match, prefix: string) => `${prefix}npm ci`,
-  );
+  const lines = splitLines(dockerfile);
+  let rewrote = false;
+  let skippedGlobal = false;
+  let skippedNoLockInImage = false;
+  let stageStart = -1;
 
-  if (patched === dockerfile) {
-    return { ok: false, reason: 'No `RUN npm install` line was found to rewrite.' };
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^\s*FROM\s/i.test(lines[index])) {
+      stageStart = index;
+      continue;
+    }
+
+    const match = lines[index].match(/npm\s+install\b([^&\n\\|;]*)/i);
+    if (!match) continue;
+
+    if (!isPlainInstall(match[1])) {
+      skippedGlobal = true;
+      continue;
+    }
+
+    if (!lockfileReachesImage(lines, stageStart, index)) {
+      skippedNoLockInImage = true;
+      continue;
+    }
+
+    lines[index] = lines[index].replace(/npm\s+install\b/i, 'npm ci');
+    rewrote = true;
   }
 
-  await copy.write('Dockerfile', patched, finding.id);
+  if (!rewrote) {
+    const reason = skippedNoLockInImage
+      ? 'The stage copies package.json without the lockfile, and `npm ci` reads the lockfile from inside ' +
+        'the image, not from the repository. It would fail with "npm ci can only install with an existing ' +
+        'package-lock.json". Copy the lockfile in first, and this fix becomes safe.'
+      : skippedGlobal
+        ? 'Every `npm install` here names a package or installs globally, and `npm ci` does neither — it ' +
+          'installs the current project from its lockfile. Rewriting them would break the build.'
+        : 'No `npm install` line was found to rewrite.';
+
+    return { ok: false, reason };
+  }
+
+  await copy.write('Dockerfile', lines.join(lineEnding(dockerfile)), finding.id);
 
   return {
     ok: true,
     filePath: 'Dockerfile',
-    rationale: 'Replaced `npm install` with `npm ci` in the build, so the image matches package-lock.json.',
+    rationale:
+      'Replaced the project `npm install` with `npm ci`, so the image matches package-lock.json.' +
+      (skippedGlobal ? ' Global installs of named packages were left alone: `npm ci` cannot do that.' : '') +
+      (skippedNoLockInImage
+        ? ' One install was left alone because its stage never copies the lockfile into the image.'
+        : '') +
+      ' `npm ci` also requires the lockfile to be in sync with package.json, which a build will confirm.',
   };
 };
+
+/**
+ * Whether the lockfile is inside the image by the time the install runs.
+ *
+ * `npm ci` reads package-lock.json from the working directory of the container,
+ * not from the repository. A stage that copies `package.json` on its own — a
+ * common way to cache the dependency layer — has the lockfile committed and
+ * still absent where it is needed.
+ */
+function lockfileReachesImage(lines: string[], stageStart: number, before: number): boolean {
+  for (let index = stageStart + 1; index < before; index += 1) {
+    const line = lines[index];
+    if (!/^\s*(COPY|ADD)\s/i.test(line)) continue;
+    if (/package-lock\.json|package\*/i.test(line)) return true;
+    // Copying the whole build context brings the lockfile with everything else.
+    if (/^\s*COPY\s+(?:--\S+\s+)*\.\s+\S/.test(line)) return true;
+  }
+  return false;
+}
 
 /**
  * Writes a .dockerignore built from this project's own .gitignore.

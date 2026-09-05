@@ -124,7 +124,63 @@ describe('Dockerfile fixes', () => {
     const plan = await planFixes([finding('docker-root-user')], source);
 
     expect(plan.files).toHaveLength(0);
-    expect(plan.refused[0].reason).toContain('entrypoint script');
+    expect(plan.refused[0].reason).toContain('shell script');
+  });
+
+  it('sees an entrypoint script even when CMD comes after it', async () => {
+    // The shape Snouzy/workout-cool ships: setup.sh runs first and CMD is the
+    // argument to it, so looking only at the last instruction misses the script.
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20-alpine AS runner',
+        'RUN chmod +x /app/scripts/setup.sh',
+        'ENTRYPOINT ["/app/scripts/setup.sh"]',
+        'CMD ["pnpm", "start"]',
+      ].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('setup.sh');
+  });
+
+  it('refuses a CMD that is itself a startup script', async () => {
+    // The shape brocoders/nestjs-boilerplate ships. There is no ENTRYPOINT, so
+    // a guard that only looked at ENTRYPOINT would let this through.
+    const source = createInMemorySource({
+      Dockerfile: ['FROM node:20-alpine', 'CMD ["/opt/startup.relational.dev.sh"]'].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('startup.relational.dev.sh');
+  });
+
+  it('ignores an entrypoint script that belongs to an earlier stage', async () => {
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20 AS builder',
+        'ENTRYPOINT ["/build.sh"]',
+        '',
+        'FROM node:20-alpine',
+        'COPY --chown=node:node --from=builder /app /app',
+        'CMD ["node", "server.js"]',
+      ].join('\n'),
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.applied).toHaveLength(1);
+    // --chown is present, so the ownership caveat is not raised.
+    expect(plan.applied[0].rationale).not.toContain('owned by root');
+  });
+
+  it('warns about file ownership when no COPY sets --chown', async () => {
+    const source = createInMemorySource({
+      Dockerfile: 'FROM node:20-alpine\nCOPY . .\nCMD ["node", "server.js"]\n',
+    });
+    const plan = await planFixes([finding('docker-root-user')], source);
+
+    expect(plan.applied[0].rationale).toContain('owned by root');
   });
 
   it('still patches an ENTRYPOINT that runs the binary directly', async () => {
@@ -154,6 +210,115 @@ describe('Dockerfile fixes', () => {
 
     expect(plan.files).toHaveLength(0);
     expect(plan.refused[0].reason).toContain('npm ci fails without one');
+  });
+
+  it('never rewrites a global install of a named package', async () => {
+    // The shape DaKheera47/job-ops ships. `npm ci -g @scope/cli` is not a
+    // command: ci takes no package argument and has no global mode.
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20',
+        'RUN npm install -g @openai/codex@1.2.3',
+        'RUN npm install -g @anthropic-ai/claude-code@2.0.0',
+        'CMD ["node", "x.js"]',
+      ].join('\n'),
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('names a package or installs globally');
+  });
+
+  it('rewrites the project install and leaves the global ones intact', async () => {
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20',
+        'RUN npm install -g pnpm',
+        'COPY package*.json ./',
+        'RUN npm install --omit=dev',
+        'CMD ["node", "x.js"]',
+      ].join('\n'),
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files[0].patched).toContain('RUN npm install -g pnpm');
+    expect(plan.files[0].patched).toContain('RUN npm ci --omit=dev');
+    expect(plan.applied[0].rationale).toContain('Global installs');
+  });
+
+  it('does not rewrite an install that names a package', async () => {
+    const source = createInMemorySource({
+      Dockerfile: 'FROM node:20\nRUN npm install lodash\nCMD ["node", "x.js"]\n',
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files).toHaveLength(0);
+  });
+
+  it('refuses when the stage copies package.json without the lockfile', async () => {
+    // The shape cefjoeii/mern-crud ships. The lockfile is committed, but it
+    // never reaches the image, and npm ci reads it from inside the container.
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20',
+        'WORKDIR /usr/src/app',
+        'COPY package.json /usr/src/app/',
+        'RUN npm install',
+        'CMD ["node", "x.js"]',
+      ].join('\n'),
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('reads the lockfile from inside the image');
+  });
+
+  it('accepts the glob that brings the lockfile along', async () => {
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20',
+        'COPY package*.json ./',
+        'RUN npm install --omit=dev',
+        'CMD ["node", "x.js"]',
+      ].join('\n'),
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files[0].patched).toContain('npm ci --omit=dev');
+  });
+
+  it('accepts a stage that copies the whole build context', async () => {
+    const source = createInMemorySource({
+      Dockerfile: 'FROM node:20\nCOPY . .\nRUN npm install\nCMD ["node", "x.js"]\n',
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files[0].patched).toContain('RUN npm ci');
+  });
+
+  it('does not credit a lockfile copied in a different stage', async () => {
+    const source = createInMemorySource({
+      Dockerfile: [
+        'FROM node:20 AS deps',
+        'COPY package-lock.json ./',
+        '',
+        'FROM node:20',
+        'COPY package.json ./',
+        'RUN npm install',
+        'CMD ["node", "x.js"]',
+      ].join('\n'),
+      'package-lock.json': '{}',
+    });
+    const plan = await planFixes([finding('docker-npm-install')], source);
+
+    expect(plan.files).toHaveLength(0);
+    expect(plan.refused[0].reason).toContain('reads the lockfile from inside the image');
   });
 
   it('composes two fixes to the same file into one patch', async () => {
