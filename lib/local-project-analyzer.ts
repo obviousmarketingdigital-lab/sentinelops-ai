@@ -1,5 +1,6 @@
 import path from 'path';
 import { createFileSystemSource, type ProjectSource } from './project-source';
+import { ignoresPath } from './gitignore';
 
 export interface LocalAuditFinding {
   id: string;
@@ -453,13 +454,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
 
   const gitignore = track('.gitignore', await source.read('.gitignore'));
 
-  // "/node_modules" is what every Next and CRA template writes, and it ignores
-  // the directory just as well as the bare name. Demanding one spelling would
-  // report a false finding on most of the ecosystem.
-  const ignoresNodeModules =
-    !!gitignore && /^\s*(?:\*\*\/)?\/?node_modules\/?\s*$/m.test(gitignore);
-
-  if (gitignore && !ignoresNodeModules) {
+  if (gitignore && !ignoresPath(gitignore, 'node_modules')) {
     findings.push({
       id: 'gitignore-node-modules',
       category: 'Security',
@@ -473,10 +468,12 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     });
   }
 
-  const ignoresEnv = !!gitignore && /^\s*\.env/m.test(gitignore);
+  // Each file is asked about on its own. A single "does it mention .env"
+  // test treated a `.envrc` entry as covering `.env`, and could not see a
+  // project that ignores `.env` but not `.env.local`.
   for (const envFile of ['.env', '.env.local', '.env.production']) {
     const present = await source.read(envFile);
-    if (present !== null && !ignoresEnv) {
+    if (present !== null && !ignoresPath(gitignore, envFile)) {
       findings.push({
         id: `security-env-exposed-${envFile}`,
         category: 'Security',

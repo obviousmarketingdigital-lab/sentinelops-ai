@@ -1,5 +1,6 @@
 import type { LocalAuditFinding } from './local-project-analyzer';
 import type { ProjectSource } from './project-source';
+import { ignoresPath } from './gitignore';
 
 /**
  * Computes the edit that resolves a finding, from the file that produced it.
@@ -255,14 +256,6 @@ function appendLine(existing: string | null, line: string): string {
   return `${existing}${needsBreak ? eol : ''}${line}${eol}`;
 }
 
-function ignoresPattern(gitignore: string | null, pattern: string): boolean {
-  if (!gitignore) return false;
-  const normalized = pattern.replace(/\/$/, '');
-  return splitLines(gitignore).some((line) => {
-    const entry = line.trim().replace(/\/$/, '');
-    return entry !== '' && !entry.startsWith('#') && entry === normalized;
-  });
-}
 
 /* ------------------------------------------------------------------ *
  * Fixers
@@ -668,7 +661,10 @@ function ignoreEntryFixer(pattern: string, label: string): Fixer {
   return async (finding, copy) => {
     const gitignore = await copy.read('.gitignore');
 
-    if (ignoresPattern(gitignore, pattern)) {
+    // Asked about the path itself, not the spelling of the rule: a project
+    // that already writes `/node_modules` must not have `node_modules/`
+    // appended underneath it.
+    if (ignoresPath(gitignore, pattern.replace(/\/$/, ''))) {
       return { ok: false, reason: `.gitignore already lists ${pattern}.` };
     }
 
