@@ -110,9 +110,11 @@ GITHUB_REPO=your-repository
 ```
 
 `GITHUB_WEBHOOK_SECRET` is required for the webhook endpoint to accept anything;
-without it every delivery is rejected. `STRIPE_SECRET_KEY` enables checkout, and
-without it the endpoint reports that billing is unavailable rather than
-simulating a session.
+without it every delivery is rejected.
+
+There is no billing, no account and no API key. Every endpoint here is
+anonymous, and the audit refuses private repositories precisely because there is
+no identity to check them against.
 
 `SENTINEL_DATA_DIR` points the applied-fix history at a mounted volume. Without
 it the history lives on the container filesystem and is lost on every restart.
@@ -146,7 +148,6 @@ for a score that was not measured. Results are cached for five minutes.
 | `POST /api/sentinel/preview-fix` | the diff that would fix a project, written nowhere: `{ local: true }` or `{ owner, repo }` |
 | `POST /api/sentinel/local-fix` | opens a pull request carrying the patch: `{ id }` or `{ all: true }` |
 | `POST /api/webhooks/github` | rejects deliveries without a valid `x-hub-signature-256` |
-| `POST /api/revenue/checkout` | Stripe checkout; returns 503 when billing is unconfigured |
 
 ---
 
