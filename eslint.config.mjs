@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Compiled output of tsconfig.mcp.json. It is CommonJS by design, which
+    // every rule about import style would flag; the sources are linted instead.
+    "dist/**",
   ]),
 ]);
 

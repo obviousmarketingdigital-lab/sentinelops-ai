@@ -12,7 +12,6 @@ function report(overrides: Partial<LocalAuditReport> = {}): LocalAuditReport {
     filesInspected: ["package.json", "Dockerfile"],
     filesMissing: [],
     filesUnreadable: [],
-    healthScore: 85,
     findingsCount: 1,
     findings: [
       {
@@ -22,7 +21,6 @@ function report(overrides: Partial<LocalAuditReport> = {}): LocalAuditReport {
         description: "No USER instruction is present.",
         impact: "Medium",
         recommendation: "Add a USER instruction before CMD.",
-        autoFixAvailable: false,
         evidence: "no USER instruction in Dockerfile",
         source: "Dockerfile",
       },
@@ -50,7 +48,7 @@ describe("agent prompt", () => {
 
   it("says so plainly when nothing could be analyzed", () => {
     const text = toAgentPrompt(
-      report({ analyzable: false, healthScore: null, findings: [], findingsCount: 0, notes: ["no package.json"] }),
+      report({ analyzable: false, findings: [], findingsCount: 0, notes: ["no package.json"] }),
     );
 
     expect(text).toContain("could not analyze");

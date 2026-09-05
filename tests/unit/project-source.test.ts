@@ -48,7 +48,6 @@ describe("source-agnostic auditing", () => {
     const report = await auditProject(createInMemorySource({}, "empty-source"));
 
     expect(report.analyzable).toBe(false);
-    expect(report.healthScore).toBeNull();
     expect(report.findings).toHaveLength(0);
     expect(report.notes.join(" ")).toContain("empty-source");
   });
@@ -96,7 +95,6 @@ describe("reporting what could not be measured", () => {
 
     expect(report.analyzable).toBe(false);
     expect(report.findings).toHaveLength(0);
-    expect(report.healthScore).toBeNull();
     expect(report.notes.join(" ")).toContain("deployed runtime");
   });
 
@@ -118,7 +116,6 @@ describe("reporting what could not be measured", () => {
     const report = await auditProject(source);
 
     expect(report.analyzable).toBe(false);
-    expect(report.healthScore).toBeNull();
     expect(report.findings).toHaveLength(0);
     expect(report.filesUnreadable).toContain("package.json");
   });

@@ -1,7 +1,8 @@
 # Sentinel
 
 > A static audit agent for Node projects. It reads the repository it is pointed at,
-> reports what it actually finds, and can open a pull request describing each finding.
+> reports what it actually finds, and computes the patch that fixes what it can
+> prove — refusing, by name and with a reason, everything it cannot.
 
 [![Sentinel](https://sentinelops-ai-fuzj.onrender.com/api/sentinel/badge?repo=obviousmarketingdigital-lab/sentinelops-ai)](https://sentinelops-ai-fuzj.onrender.com/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16.3.3-black?style=flat&logo=next.js)](https://nextjs.org/)
@@ -31,27 +32,122 @@ This matters more than a feature list, so it comes first.
 | Security | `.env` files and `node_modules` not covered by `.gitignore` |
 | Advisories | installed versions from `package-lock.json` queried against the npm advisory database |
 
-The health score is `100` minus a penalty for each finding — 15 for high impact,
-8 for medium, 3 for low. When the source tree is not reachable, for example
-inside a standalone container that does not ship its own sources, the audit
-reports that it could not analyze anything rather than returning a number.
+### There is no score
+
+Sentinel used to report `78/100`, computed as 100 minus a penalty per finding —
+15, 8 or 3 by impact. Those weights came from nowhere. Two projects sharing a 78
+have nothing in common, the number invited the only question that mattered
+(compared to what) and answered it with nothing, and alone among everything here
+it could not be traced back to a line in a file.
+
+So it is gone. The audit reports how many findings it produced, what each one
+was read from, and how many carry a patch it can compute. Grading is left to
+whoever knows what the project is for. The badge says the same:
+
+```
+sentinel: 3 findings · 2 patchable
+```
+
+When the source tree is not reachable — inside a standalone container that does
+not ship its own sources, say — the audit reports that it could not analyze
+anything, and the badge reads `n/a` in grey rather than borrowing a passing
+colour.
 
 ---
 
-## Pull requests
+## The patch
 
-With `GITHUB_TOKEN`, `GITHUB_OWNER` and `GITHUB_REPO` configured, the
-**Open pull request** button creates a branch and opens a PR containing a report
-of the finding under `sentinel-reports/`.
+Earlier versions of this file drew a boundary: Sentinel would describe a change
+rather than make one, *"until the agent can compute a diff from the file it is
+editing."* It can now, so it does.
 
-It writes a report rather than editing your source files. Generating a
-replacement `package.json` or `Dockerfile` from a template means proposing
-content that was never derived from the real file, and merging it would destroy
-the original. Until the agent can compute a diff from the file it is editing,
-describing the change for a human to apply is the honest boundary.
+The rule that produced that boundary has not moved. Generating a replacement
+`package.json` or `Dockerfile` from a template proposes content that was never
+derived from the real file, and merging it would destroy the original. A
+line-level edit applied to text the fixer has just read is derived from the real
+file, which is why it is allowed and a template still is not.
 
-Without those variables the endpoint returns `412` and says it is not
-configured. It never reports a pull request that was not opened.
+`POST /api/sentinel/preview-fix` returns the diff and writes nothing. Seven
+findings have a fixer:
+
+| Finding | The edit |
+| --- | --- |
+| `docker-root-user` | inserts `USER node` before the final `CMD` |
+| `docker-npm-install` | rewrites `npm install` to `npm ci` |
+| `docker-unpinned-base` | pins the tag to the major in `engines.node` |
+| `docker-copy-all` | writes `.dockerignore` from this repository's `.gitignore` |
+| `ts-strict-off` | sets `"strict": true`, keeping comments and formatting |
+| `deps-no-engines` | declares the version the Dockerfile already builds on |
+| `gitignore-node-modules`, `security-env-exposed-*` | appends the entry |
+
+### Three outcomes, kept apart
+
+**Applied** — the edit was computed, and the rationale names what changed.
+
+**Refused** — a precondition in the repository does not hold, and the reason is
+specific enough to act on. `npm ci` is refused when no lockfile is committed,
+because it exits non-zero without one and the "fix" would break the next build.
+`USER node` is refused on a base image that is not an official node image,
+because a container that cannot start is worse than the finding it closed.
+Pinning is refused when the repository declares no version to copy, because
+choosing one would be a guess.
+
+**Not measured** — the files needed to judge could not be read. A dropped
+connection is never reported as a refusal: that would state an opinion the fixer
+never formed.
+
+Findings whose remedy is a design decision — splitting build stages, choosing a
+base image, replacing a network `ADD` with a checksummed download — are refused
+by name, with the reason, rather than attempted.
+
+With `GITHUB_TOKEN`, `GITHUB_OWNER` and `GITHUB_REPO` configured,
+`POST /api/sentinel/local-fix` opens a pull request carrying that patch; pass
+`{ "all": true }` for every fixable finding in one branch. Without those
+variables the endpoint returns `412` and says it is not configured. It never
+reports a pull request that was not opened.
+
+---
+
+## The MCP server
+
+The hosted endpoints refuse private repositories, and that refusal is
+deliberate: a server lending its own token would hand a caller files they
+cannot read themselves. The MCP server has no such problem. It runs on the
+developer's machine, reads the working tree directly, and sends the source
+nowhere — so a private repository is the ordinary case rather than the
+exception.
+
+```bash
+npm run build:mcp
+```
+
+Then point an agent at it:
+
+```json
+{
+  "mcpServers": {
+    "sentinel": { "command": "node", "args": ["/path/to/dist/mcp/server.js"] }
+  }
+}
+```
+
+Four tools, all read-only:
+
+| Tool | Returns |
+| --- | --- |
+| `audit_repository` | every finding with the exact text that produced it |
+| `plan_fixes` | a unified diff computed from the current files, and the reason for each refusal |
+| `scan_advisories` | installed versions against the npm advisory database |
+| `list_checks` | what is in scope, so silence is never mistaken for a pass |
+
+`plan_fixes` writes nothing. It returns the patch and leaves applying it to
+whoever is reading — the agent already has file access, and what it does not
+have is an answer that is identical every time it asks, carries the text it
+was derived from, and says plainly when it does not know.
+
+Pass `path` for a local directory, or `repo: "owner/repo"` for a public one.
+`GITHUB_TOKEN` from the environment, if set, is the caller's own, so a private
+repository they can read is one the server can read.
 
 ---
 
@@ -73,9 +169,11 @@ GITHUB_REPO=your-repository
 ```
 
 `GITHUB_WEBHOOK_SECRET` is required for the webhook endpoint to accept anything;
-without it every delivery is rejected. `STRIPE_SECRET_KEY` enables checkout, and
-without it the endpoint reports that billing is unavailable rather than
-simulating a session.
+without it every delivery is rejected.
+
+There is no billing, no account and no API key. Every endpoint here is
+anonymous, and the audit refuses private repositories precisely because there is
+no identity to check them against.
 
 `SENTINEL_DATA_DIR` points the applied-fix history at a mounted volume. Without
 it the history lives on the container filesystem and is lost on every restart.
@@ -106,9 +204,9 @@ for a score that was not measured. Results are cached for five minutes.
 | `POST /api/sentinel/audit-repo` | audits a GitHub repository: `{ owner, repo, ref? }` |
 | `GET /api/sentinel/security` | npm advisories for the installed tree |
 | `GET /api/sentinel/badge` | SVG badge for this project, or `?repo=OWNER/REPO` |
-| `POST /api/sentinel/local-fix` | opens a pull request for one finding |
+| `POST /api/sentinel/preview-fix` | the diff that would fix a project, written nowhere: `{ local: true }` or `{ owner, repo }` |
+| `POST /api/sentinel/local-fix` | opens a pull request carrying the patch: `{ id }` or `{ all: true }` |
 | `POST /api/webhooks/github` | rejects deliveries without a valid `x-hub-signature-256` |
-| `POST /api/revenue/checkout` | Stripe checkout; returns 503 when billing is unconfigured |
 
 ---
 

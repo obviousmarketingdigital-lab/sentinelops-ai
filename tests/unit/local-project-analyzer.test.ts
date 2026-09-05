@@ -95,10 +95,9 @@ describe("local project audit", () => {
 
     expect(report.analyzable).toBe(false);
     expect(report.findings).toHaveLength(0);
-    expect(report.healthScore).toBeNull();
   });
 
-  it("derives the health score from the findings it produced", async () => {
+  it("reports the findings it produced and grades none of them", async () => {
     const root = await makeProject({
       "package.json": JSON.stringify({ name: "fixture" }),
       "package-lock.json": "{}",
@@ -107,8 +106,10 @@ describe("local project audit", () => {
 
     const report = await auditLocalProject(root);
 
-    // Only the unpinned Node version should be reported, worth 3 points.
     expect(report.findings.map((f) => f.id)).toEqual(["deps-no-engines"]);
-    expect(report.healthScore).toBe(97);
+    expect(report.findingsCount).toBe(1);
+    // No aggregate number is produced: a count and the findings themselves are
+    // the whole report, because a score traced to nothing in any file.
+    expect(report).not.toHaveProperty("healthScore");
   });
 });

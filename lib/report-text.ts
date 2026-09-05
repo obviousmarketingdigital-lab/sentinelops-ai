@@ -36,7 +36,6 @@ export function toAgentPrompt(report: LocalAuditReport, scan?: SecurityScanResul
     `${report.findingsCount} finding${report.findingsCount === 1 ? '' : 's'}`,
     `${report.filesInspected.length} file${report.filesInspected.length === 1 ? '' : 's'} read`,
   ];
-  if (report.healthScore !== null) summary.push(`health ${report.healthScore}/100`);
   lines.push(summary.join(' · '), '');
   lines.push(`Files read: ${report.filesInspected.join(', ')}`, '');
 

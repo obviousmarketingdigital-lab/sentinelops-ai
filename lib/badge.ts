@@ -1,13 +1,13 @@
 import type { LocalAuditReport } from './local-project-analyzer';
+import { hasFixer } from './fix-engine';
 
 const LABEL_WIDTH = 65;
 const CHAR_WIDTH = 6.6;
 const PADDING = 14;
 
 export const BADGE_COLORS = {
-  good: '#7c9c88',
-  fair: '#c8763e',
-  poor: '#a8443a',
+  clean: '#7c9c88',
+  findings: '#c8763e',
   unknown: '#5b666e',
 } as const;
 
@@ -17,20 +17,35 @@ export interface BadgeState {
 }
 
 /**
- * A badge sits in someone else's README, so it must never assert a score the
- * audit did not produce. An unmeasurable project reads "n/a" in grey rather
- * than borrowing the colour of a passing grade.
+ * A badge sits in someone else's README, so every word on it must be a fact.
+ *
+ * It used to read `78/100`, a number computed as 100 minus a penalty per
+ * finding. Nothing about that traced to a line in a file, and it invited the
+ * only question that mattered — compared to what — with no answer. A count
+ * answers for itself: three findings are three findings, and two of them have
+ * a patch this tool can compute today.
+ *
+ * The colour grades nothing either. Green means the checks found nothing,
+ * amber means they found something, grey means they could not run. A project
+ * the audit cannot analyse never borrows a passing colour.
  */
 export function badgeStateFor(report: LocalAuditReport): BadgeState {
-  if (!report.analyzable || report.healthScore === null) {
+  if (!report.analyzable) {
     return { label: 'n/a', color: BADGE_COLORS.unknown };
   }
 
-  const score = report.healthScore;
-  const color =
-    score > 80 ? BADGE_COLORS.good : score > 60 ? BADGE_COLORS.fair : BADGE_COLORS.poor;
+  const total = report.findings.length;
+  if (total === 0) {
+    return { label: 'no findings', color: BADGE_COLORS.clean };
+  }
 
-  return { label: `${score}/100`, color };
+  const patchable = report.findings.filter((finding) => hasFixer(finding.id)).length;
+  const noun = total === 1 ? 'finding' : 'findings';
+
+  return {
+    label: patchable > 0 ? `${total} ${noun} · ${patchable} patchable` : `${total} ${noun}`,
+    color: BADGE_COLORS.findings,
+  };
 }
 
 function escapeXml(value: string): string {

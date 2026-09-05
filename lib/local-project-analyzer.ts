@@ -1,5 +1,6 @@
 import path from 'path';
 import { createFileSystemSource, type ProjectSource } from './project-source';
+import { ignoresPath } from './gitignore';
 
 export interface LocalAuditFinding {
   id: string;
@@ -8,7 +9,15 @@ export interface LocalAuditFinding {
   description: string;
   impact: 'Low' | 'Medium' | 'High';
   recommendation: string;
-  autoFixAvailable: boolean;
+  /*
+   * There is no autoFixAvailable flag.
+   *
+   * The analyzer wrote one on every finding and set it to false every time,
+   * while the fix engine could patch seven of them — a field that contradicted
+   * the product and was read by nothing. Whether a finding can be fixed is a
+   * fact about the fixers, so `hasFixer(id)` answers it, and whether it will
+   * be is a fact about this repository, which only planFixes can decide.
+   */
   /** Exact text observed in the project that triggered this finding. */
   evidence: string;
   source: string;
@@ -25,7 +34,6 @@ export interface LocalAuditReport {
   filesMissing: string[];
   /** Files that were read but could not be parsed, so nothing was concluded. */
   filesUnreadable: string[];
-  healthScore: number | null;
   findingsCount: number;
   findings: LocalAuditFinding[];
   notes: string[];
@@ -33,11 +41,16 @@ export interface LocalAuditReport {
 
 const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb'];
 
-const IMPACT_PENALTY: Record<LocalAuditFinding['impact'], number> = {
-  High: 15,
-  Medium: 8,
-  Low: 3,
-};
+/*
+ * There is no health score.
+ *
+ * An earlier version reported `100` minus a penalty per finding — 15, 8 or 3
+ * by impact. Those weights came from nowhere: two projects sharing a 78 have
+ * nothing in common, and the number could not be traced to any line of any
+ * file, which is the one thing everything else here can do. A count can. The
+ * audit reports how many findings it produced and what each one was read from,
+ * and leaves the grading to whoever knows what the project is for.
+ */
 
 /**
  * tsconfig.json allows comments and trailing commas; JSON.parse does not.
@@ -178,7 +191,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'compilers and dev dependencies ship inside the production image.',
       impact: 'High',
       recommendation: 'Split the Dockerfile into a builder stage and a slim runtime stage.',
-      autoFixAvailable: false,
       evidence: fromLines.join(' | ') || 'no FROM instruction found',
       source: 'Dockerfile',
     });
@@ -192,7 +204,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
       description: 'No alpine or slim base image was found, which inflates image size and attack surface.',
       impact: 'Medium',
       recommendation: 'Use an -alpine or -slim tag for the runtime stage.',
-      autoFixAvailable: false,
       evidence: fromLines.join(' | '),
       source: 'Dockerfile',
     });
@@ -206,7 +217,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
       description: 'No USER instruction is present, so the process runs as root inside the container.',
       impact: 'Medium',
       recommendation: 'Create an unprivileged user and add a USER instruction before CMD.',
-      autoFixAvailable: false,
       evidence: 'no USER instruction in Dockerfile',
       source: 'Dockerfile',
     });
@@ -231,7 +241,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'A base image with no tag, or on latest, resolves to whatever is current at build time, so the same Dockerfile produces different images over time.',
       impact: 'Medium',
       recommendation: 'Pin the base image to a version tag, or to a digest for an exact build.',
-      autoFixAvailable: false,
       evidence: unpinned.join(' | '),
       source: 'Dockerfile',
     });
@@ -246,7 +255,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'The whole working directory is copied into the image with nothing excluded, so .env files, .git history and node_modules ship inside the container.',
       impact: 'High',
       recommendation: 'Add a .dockerignore covering .git, node_modules, .env* and build output.',
-      autoFixAvailable: false,
       evidence: 'COPY . . and no .dockerignore in the project',
       source: 'Dockerfile',
     });
@@ -265,7 +273,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'ADD with a URL downloads at build time without verifying what arrived, so the image contents depend on a third party staying honest and available.',
       impact: 'Medium',
       recommendation: 'Download with curl and verify a checksum, or vendor the file into the repository.',
-      autoFixAvailable: false,
       evidence: remoteAdd.join(' | '),
       source: 'Dockerfile',
     });
@@ -280,7 +287,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'npm install may resolve versions differently than the lockfile, which makes builds non-reproducible.',
       impact: 'Medium',
       recommendation: 'Use npm ci so the build always matches package-lock.json.',
-      autoFixAvailable: false,
       evidence: 'RUN npm install',
       source: 'Dockerfile',
     });
@@ -315,7 +321,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       filesInspected,
       filesMissing,
       filesUnreadable,
-      healthScore: null,
       findingsCount: 0,
       findings: [],
       notes: [
@@ -345,7 +350,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       filesInspected,
       filesMissing,
       filesUnreadable,
-      healthScore: null,
       findingsCount: 0,
       findings: [],
       notes: [`package.json at ${source.origin} could not be parsed, so no checks ran.`],
@@ -381,8 +385,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
             'compilerOptions.strict is not set to true, so null checks and implicit any are not enforced.',
           impact: 'Medium',
           recommendation: 'Set "strict": true in tsconfig.json and fix the errors it surfaces.',
-          autoFixAvailable: false,
-          evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
+              evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
           source: 'tsconfig.json',
         });
       }
@@ -406,7 +409,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'Without a lockfile, two installs of the same commit can resolve to different dependency versions.',
       impact: 'High',
       recommendation: 'Commit the lockfile your package manager produces and install from it.',
-      autoFixAvailable: false,
       evidence: `none of ${LOCKFILES.join(', ')} was found`,
       source: 'package.json',
     });
@@ -421,7 +423,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'package.json does not declare engines.node, so local, CI and production can silently run different runtimes.',
       impact: 'Low',
       recommendation: 'Declare the supported Node range under "engines" in package.json.',
-      autoFixAvailable: false,
       evidence: 'no "engines" field',
       source: 'package.json',
     });
@@ -446,7 +447,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'A dependency pointing at git, a URL or a local path is not covered by the npm advisory database and can change without a version bump.',
       impact: 'Medium',
       recommendation: 'Publish the package to a registry, or vendor it and pin the exact commit.',
-      autoFixAvailable: false,
       evidence: remoteDeps.join(' | '),
       source: 'package.json',
     });
@@ -454,13 +454,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
 
   const gitignore = track('.gitignore', await source.read('.gitignore'));
 
-  // "/node_modules" is what every Next and CRA template writes, and it ignores
-  // the directory just as well as the bare name. Demanding one spelling would
-  // report a false finding on most of the ecosystem.
-  const ignoresNodeModules =
-    !!gitignore && /^\s*(?:\*\*\/)?\/?node_modules\/?\s*$/m.test(gitignore);
-
-  if (gitignore && !ignoresNodeModules) {
+  if (gitignore && !ignoresPath(gitignore, 'node_modules')) {
     findings.push({
       id: 'gitignore-node-modules',
       category: 'Security',
@@ -469,16 +463,17 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'Without that rule the dependency tree can be committed, which bloats the repository and ships whatever was installed locally.',
       impact: 'Low',
       recommendation: 'Add node_modules to .gitignore.',
-      autoFixAvailable: false,
       evidence: 'no node_modules rule in .gitignore',
       source: '.gitignore',
     });
   }
 
-  const ignoresEnv = !!gitignore && /^\s*\.env/m.test(gitignore);
+  // Each file is asked about on its own. A single "does it mention .env"
+  // test treated a `.envrc` entry as covering `.env`, and could not see a
+  // project that ignores `.env` but not `.env.local`.
   for (const envFile of ['.env', '.env.local', '.env.production']) {
     const present = await source.read(envFile);
-    if (present !== null && !ignoresEnv) {
+    if (present !== null && !ignoresPath(gitignore, envFile)) {
       findings.push({
         id: `security-env-exposed-${envFile}`,
         category: 'Security',
@@ -486,8 +481,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         description: 'A secrets file that git does not ignore can be committed and published by accident.',
         impact: 'High',
         recommendation: `Add ${envFile} to .gitignore and rotate any credential that was already committed.`,
-        autoFixAvailable: false,
-        evidence: `${envFile} exists and .gitignore has no matching .env rule`,
+          evidence: `${envFile} exists and .gitignore has no matching .env rule`,
         source: '.gitignore',
       });
     }
@@ -513,7 +507,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       filesInspected,
       filesMissing,
       filesUnreadable,
-      healthScore: null,
       findingsCount: 0,
       findings: [],
       notes: [
@@ -523,8 +516,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     };
   }
 
-  const penalty = findings.reduce((sum, finding) => sum + IMPACT_PENALTY[finding.impact], 0);
-
   return {
     projectName,
     origin: source.origin,
@@ -533,7 +524,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     filesInspected,
     filesMissing,
     filesUnreadable,
-    healthScore: Math.max(0, Math.min(100, 100 - penalty)),
     findingsCount: findings.length,
     findings,
     notes,
