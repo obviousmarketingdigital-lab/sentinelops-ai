@@ -32,10 +32,26 @@ This matters more than a feature list, so it comes first.
 | Security | `.env` files and `node_modules` not covered by `.gitignore` |
 | Advisories | installed versions from `package-lock.json` queried against the npm advisory database |
 
-The health score is `100` minus a penalty for each finding — 15 for high impact,
-8 for medium, 3 for low. When the source tree is not reachable, for example
-inside a standalone container that does not ship its own sources, the audit
-reports that it could not analyze anything rather than returning a number.
+### There is no score
+
+Sentinel used to report `78/100`, computed as 100 minus a penalty per finding —
+15, 8 or 3 by impact. Those weights came from nowhere. Two projects sharing a 78
+have nothing in common, the number invited the only question that mattered
+(compared to what) and answered it with nothing, and alone among everything here
+it could not be traced back to a line in a file.
+
+So it is gone. The audit reports how many findings it produced, what each one
+was read from, and how many carry a patch it can compute. Grading is left to
+whoever knows what the project is for. The badge says the same:
+
+```
+sentinel: 3 findings · 2 patchable
+```
+
+When the source tree is not reachable — inside a standalone container that does
+not ship its own sources, say — the audit reports that it could not analyze
+anything, and the badge reads `n/a` in grey rather than borrowing a passing
+colour.
 
 ---
 

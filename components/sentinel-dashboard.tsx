@@ -48,8 +48,8 @@ interface PreviewFile {
 
 interface PreviewPlan {
   analyzable: boolean;
-  healthScore: number | null;
-  projectedScore: number | null;
+  findingsCount?: number;
+  patchedCount?: number;
   files: PreviewFile[];
   applied: Array<{ findingId: string; filePath: string; rationale: string }>;
   refused: Array<{ findingId: string; reason: string }>;
@@ -82,68 +82,74 @@ const VERDICT_PRESENTATION: Record<
  * ------------------------------------------------------------------ */
 
 /**
- * The score as a position on a scale, not a number on its own.
+ * One mark per finding.
  *
- * A bare 78 invites the only question that matters — compared to what — and
- * answers it with nothing. Drawn against the full range, with the part the
- * pending fixes would recover marked separately, the same number says where
- * the repository stands and how far the patch moves it. The caret marks the
- * projected score for the same reason the logo carries one: it points at the
- * exact place being claimed.
+ * This replaced a 0-100 meter, and the reason is the same one that governs
+ * everything else here. That number was 100 minus a penalty per finding, so it
+ * traced to no line in any file and answered "compared to what" with nothing.
+ * A tally cannot overstate: every mark is one finding the audit produced, and
+ * a filled mark is one the plan actually closes. The picture is countable
+ * against the list below it, which is the only claim it makes.
  */
-function ScoreMeter({ score, projected }: { score: number; projected: number | null }) {
-  const target = projected !== null && projected > score ? projected : score;
-  const recoverable = target - score;
+function FindingTally({
+  findings,
+  verdicts,
+  planned,
+}: {
+  findings: LocalAuditFinding[];
+  verdicts: Map<string, Verdict>;
+  planned: boolean;
+}) {
+  const closed = findings.filter((f) => verdicts.get(f.id)?.kind === "fix").length;
+  const fixable = findings.filter((f) => hasFixer(f.id)).length;
+  const shown = planned ? closed : fixable;
 
   return (
     <figure className="m-0">
       <figcaption className="flex items-baseline justify-between gap-4">
         <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
-          health
+          findings
         </span>
         <span className="font-mono text-sm tabular-nums">
-          <span className={recoverable > 0 ? "text-[var(--ink-dim)]" : "text-[var(--ink)]"}>
-            {score}
-          </span>
-          {recoverable > 0 && (
+          <span className="text-[var(--ink)]">{findings.length}</span>
+          {shown > 0 && (
             <>
-              <span className="px-1.5 text-[var(--ink-faint)]">&rarr;</span>
-              <span className="text-[var(--flag)]">{target}</span>
+              <span className="px-1.5 text-[var(--ink-faint)]">·</span>
+              <span className="text-[var(--add)]">{shown}</span>
+              <span className="pl-1.5 text-[var(--ink-faint)]">
+                {planned ? "patched" : "patchable"}
+              </span>
             </>
           )}
-          <span className="pl-1.5 text-[var(--ink-faint)]">/100</span>
         </span>
       </figcaption>
 
       <div
-        className="relative mt-3 h-[2px] w-full bg-[var(--line)]"
+        className="mt-3 flex flex-wrap gap-1.5"
         role="img"
-        aria-label={
-          recoverable > 0
-            ? `Health ${score} out of 100, rising to ${target} once the computed fixes land.`
-            : `Health ${score} out of 100.`
-        }
+        aria-label={`${findings.length} finding${findings.length === 1 ? "" : "s"}, ${shown} ${
+          planned ? "patched by this plan" : "with a fix available"
+        }.`}
       >
-        <div
-          className="absolute inset-y-0 left-0 bg-[var(--ink)] transition-[width] duration-500"
-          style={{ width: `${score}%` }}
-        />
-        {recoverable > 0 && (
-          <div
-            className="absolute inset-y-0 bg-[var(--flag)] transition-[width] duration-500"
-            style={{ left: `${score}%`, width: `${recoverable}%` }}
-          />
-        )}
-      </div>
+        {findings.map((finding) => {
+          const verdict = verdicts.get(finding.id);
+          const filled = verdict ? verdict.kind === "fix" : hasFixer(finding.id);
+          const unmeasured = verdict?.kind === "unavailable";
 
-      <div className="relative h-4">
-        <span
-          aria-hidden
-          className="absolute top-0 -translate-x-1/2 font-mono text-base leading-none text-[var(--flag)] transition-[left] duration-500"
-          style={{ left: `${Math.min(target, 99)}%` }}
-        >
-          ^
-        </span>
+          return (
+            <span
+              key={finding.id}
+              title={finding.title}
+              className={`h-3 w-3 border ${
+                unmeasured
+                  ? "border-[var(--flag)] border-dashed"
+                  : filled
+                    ? "border-[var(--add)] bg-[var(--add)]"
+                    : "border-[var(--ink-faint)]"
+              }`}
+            />
+          );
+        })}
       </div>
     </figure>
   );
@@ -591,7 +597,6 @@ export function SentinelDashboard() {
     }
   }
 
-  const score = plan?.healthScore ?? report?.healthScore ?? null;
 
   return (
     <div
@@ -619,7 +624,7 @@ export function SentinelDashboard() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/api/sentinel/badge?repo=obviousmarketingdigital-lab/sentinelops-ai"
-              alt="Sentinel health badge for this repository"
+              alt="Sentinel findings badge for this repository"
               className="h-5 opacity-70"
             />
           </div>
@@ -686,17 +691,14 @@ export function SentinelDashboard() {
 
           {activeTab === "findings" && (
             <>
-              {report?.analyzable && score !== null && (
+              {report?.analyzable && (
                 <div className="mt-14 grid gap-x-12 gap-y-8 border-t border-[var(--line)] pt-8 md:grid-cols-[1fr_18rem]">
                   <dl className="grid grid-cols-[6.5rem_1fr] gap-x-4 gap-y-1.5 self-start font-mono text-xs">
                     <dt className="text-[var(--ink-faint)]">source</dt>
                     <dd className="break-words text-[var(--ink)]">{report.origin}</dd>
-                    <dt className="text-[var(--ink-faint)]">findings</dt>
+                    <dt className="text-[var(--ink-faint)]">checks</dt>
                     <dd className="text-[var(--ink-dim)]">
-                      {report.findingsCount === 0 ? "none" : report.findingsCount}
-                      {fixableCount > 0 && (
-                        <span className="text-[var(--ink-faint)]"> · {fixableCount} fixable</span>
-                      )}
+                      Docker · TypeScript · dependencies · secrets
                     </dd>
                     <dt className="text-[var(--ink-faint)]">files read</dt>
                     <dd className="text-[var(--ink-dim)]">{report.filesInspected.length}</dd>
@@ -708,7 +710,13 @@ export function SentinelDashboard() {
                     )}
                   </dl>
 
-                  <ScoreMeter score={score} projected={plan?.projectedScore ?? null} />
+                  {report.findings.length > 0 && (
+                    <FindingTally
+                      findings={report.findings}
+                      verdicts={verdicts}
+                      planned={plan !== null}
+                    />
+                  )}
                 </div>
               )}
 

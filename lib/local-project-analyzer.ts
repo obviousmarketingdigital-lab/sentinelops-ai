@@ -25,7 +25,6 @@ export interface LocalAuditReport {
   filesMissing: string[];
   /** Files that were read but could not be parsed, so nothing was concluded. */
   filesUnreadable: string[];
-  healthScore: number | null;
   findingsCount: number;
   findings: LocalAuditFinding[];
   notes: string[];
@@ -33,11 +32,16 @@ export interface LocalAuditReport {
 
 const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb'];
 
-const IMPACT_PENALTY: Record<LocalAuditFinding['impact'], number> = {
-  High: 15,
-  Medium: 8,
-  Low: 3,
-};
+/*
+ * There is no health score.
+ *
+ * An earlier version reported `100` minus a penalty per finding — 15, 8 or 3
+ * by impact. Those weights came from nowhere: two projects sharing a 78 have
+ * nothing in common, and the number could not be traced to any line of any
+ * file, which is the one thing everything else here can do. A count can. The
+ * audit reports how many findings it produced and what each one was read from,
+ * and leaves the grading to whoever knows what the project is for.
+ */
 
 /**
  * tsconfig.json allows comments and trailing commas; JSON.parse does not.
@@ -315,7 +319,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       filesInspected,
       filesMissing,
       filesUnreadable,
-      healthScore: null,
       findingsCount: 0,
       findings: [],
       notes: [
@@ -345,7 +348,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       filesInspected,
       filesMissing,
       filesUnreadable,
-      healthScore: null,
       findingsCount: 0,
       findings: [],
       notes: [`package.json at ${source.origin} could not be parsed, so no checks ran.`],
@@ -513,7 +515,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
       filesInspected,
       filesMissing,
       filesUnreadable,
-      healthScore: null,
       findingsCount: 0,
       findings: [],
       notes: [
@@ -523,8 +524,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     };
   }
 
-  const penalty = findings.reduce((sum, finding) => sum + IMPACT_PENALTY[finding.impact], 0);
-
   return {
     projectName,
     origin: source.origin,
@@ -533,7 +532,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
     filesInspected,
     filesMissing,
     filesUnreadable,
-    healthScore: Math.max(0, Math.min(100, 100 - penalty)),
     findingsCount: findings.length,
     findings,
     notes,

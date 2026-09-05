@@ -98,10 +98,10 @@ export async function POST(request: Request) {
         success: true,
         analyzable: true,
         origin: report.origin,
-        healthScore: report.healthScore,
         findingsCount: report.findingsCount,
-        // The score this repository would carry once every computable fix lands.
-        projectedScore: projectScore(report.healthScore, report.findings, plan.applied),
+        // Two counts, both of which can be pointed at: how many findings the
+        // audit produced, and how many of them this plan actually closes.
+        patchedCount: plan.applied.length,
         files: plan.files.map((file) => ({
           filePath: file.filePath,
           created: file.original === null,
@@ -122,25 +122,3 @@ export async function POST(request: Request) {
   }
 }
 
-const IMPACT_PENALTY = { High: 15, Medium: 8, Low: 3 } as const;
-
-/**
- * Adds back the penalty of every finding the plan actually closes.
- *
- * It recomputes from the same penalty table the audit uses rather than
- * estimating, so the projected number is the number the next audit will report.
- */
-function projectScore(
-  current: number | null,
-  findings: Array<{ id: string; impact: keyof typeof IMPACT_PENALTY }>,
-  applied: Array<{ findingId: string }>,
-): number | null {
-  if (current === null) return null;
-
-  const recovered = applied.reduce((total, fix) => {
-    const finding = findings.find((item) => item.id === fix.findingId);
-    return finding ? total + IMPACT_PENALTY[finding.impact] : total;
-  }, 0);
-
-  return Math.min(100, current + recovered);
-}
