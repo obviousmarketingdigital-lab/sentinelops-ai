@@ -108,6 +108,49 @@ reports a pull request that was not opened.
 
 ---
 
+## The MCP server
+
+The hosted endpoints refuse private repositories, and that refusal is
+deliberate: a server lending its own token would hand a caller files they
+cannot read themselves. The MCP server has no such problem. It runs on the
+developer's machine, reads the working tree directly, and sends the source
+nowhere — so a private repository is the ordinary case rather than the
+exception.
+
+```bash
+npm run build:mcp
+```
+
+Then point an agent at it:
+
+```json
+{
+  "mcpServers": {
+    "sentinel": { "command": "node", "args": ["/path/to/dist/mcp/server.js"] }
+  }
+}
+```
+
+Four tools, all read-only:
+
+| Tool | Returns |
+| --- | --- |
+| `audit_repository` | every finding with the exact text that produced it |
+| `plan_fixes` | a unified diff computed from the current files, and the reason for each refusal |
+| `scan_advisories` | installed versions against the npm advisory database |
+| `list_checks` | what is in scope, so silence is never mistaken for a pass |
+
+`plan_fixes` writes nothing. It returns the patch and leaves applying it to
+whoever is reading — the agent already has file access, and what it does not
+have is an answer that is identical every time it asks, carries the text it
+was derived from, and says plainly when it does not know.
+
+Pass `path` for a local directory, or `repo: "owner/repo"` for a public one.
+`GITHUB_TOKEN` from the environment, if set, is the caller's own, so a private
+repository they can read is one the server can read.
+
+---
+
 ## Quick start
 
 ```bash

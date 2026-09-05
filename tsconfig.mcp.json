@@ -1,0 +1,31 @@
+{
+  // The app is bundled by Next and never emits; the MCP server is a real Node
+  // process and has to. Two constraints meet here and only one setting satisfies
+  // both: Turbopack does not rewrite a `./x.js` import onto `x.ts`, so lib/ must
+  // keep its extensionless relative imports, while the MCP SDK is published
+  // behind an "exports" map that classic node10 resolution cannot read.
+  //
+  // Node16 resolution reads the exports map. The root package.json declares no
+  // "type", so these sources compile as CommonJS, where extensionless relative
+  // requires are legal — and the SDK ships a CJS build its "require" condition
+  // points at. Nothing about lib/ changes to support this.
+  //
+  // DOM is in lib for fetch's types — HeadersInit and RequestInit.cache, which
+  // lib/ already uses and which the app's own tsconfig supplies the same way.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["mcp/**/*.ts", "lib/**/*.ts"]
+}
