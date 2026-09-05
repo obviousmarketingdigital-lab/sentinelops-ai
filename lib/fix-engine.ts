@@ -657,7 +657,22 @@ const fixMissingEngines: Fixer = async (finding, copy) => {
 };
 
 /** Appends one entry to .gitignore, creating the file when it is absent. */
-function ignoreEntryFixer(pattern: string, label: string): Fixer {
+/**
+ * Adds one entry to .gitignore.
+ *
+ * The rationale used to say the path "stops being tracked", which is false and
+ * was the most dangerous sentence this engine produced. .gitignore governs
+ * untracked files only: a file git already knows about stays tracked, keeps
+ * being committed, and remains in every past commit regardless. For a stray
+ * node_modules that is a nuisance. For a committed .env it means the
+ * credentials are still published and still in the history, while the patch
+ * congratulates the reader for fixing it.
+ *
+ * `alreadyCommitted` is known because the audit only raises the finding after
+ * reading the file out of the project, so what the rationale says next is a
+ * fact about this repository rather than a general warning.
+ */
+function ignoreEntryFixer(pattern: string, options: { label: string; secret?: boolean }): Fixer {
   return async (finding, copy) => {
     const gitignore = await copy.read('.gitignore');
 
@@ -670,13 +685,27 @@ function ignoreEntryFixer(pattern: string, label: string): Fixer {
 
     await copy.write('.gitignore', appendLine(gitignore, pattern), finding.id);
 
+    const wrote = gitignore === null ? `Created .gitignore with ${pattern}` : `Added ${pattern} to .gitignore`;
+
+    if (!options.secret) {
+      return {
+        ok: true,
+        filePath: '.gitignore',
+        rationale:
+          `${wrote}, so ${options.label} is not added to a future commit. Anything already ` +
+          `committed stays tracked until \`git rm -r --cached ${pattern.replace(/\/$/, '')}\` removes it.`,
+      };
+    }
+
     return {
       ok: true,
       filePath: '.gitignore',
       rationale:
-        gitignore === null
-          ? `Created .gitignore with ${pattern}, so ${label} stops being tracked.`
-          : `Added ${pattern} to .gitignore, so ${label} stops being tracked.`,
+        `${wrote}. This alone changes nothing about the file that is already there: .gitignore ` +
+        `governs untracked files, so ${pattern} stays committed until \`git rm --cached ${pattern}\`, ` +
+        `and stays readable in every past commit after that. Treat every value in it as public and ` +
+        `rotate it. Do not open a public pull request describing this before the credentials are ` +
+        `rotated — the pull request is itself a disclosure.`,
     };
   };
 }
@@ -688,7 +717,7 @@ const FIXERS: Record<string, Fixer> = {
   'docker-unpinned-base': fixDockerUnpinnedBase,
   'ts-strict-off': fixTsStrict,
   'deps-no-engines': fixMissingEngines,
-  'gitignore-node-modules': ignoreEntryFixer('node_modules/', 'the dependency tree'),
+  'gitignore-node-modules': ignoreEntryFixer('node_modules/', { label: 'the dependency tree' }),
 };
 
 /**
@@ -718,7 +747,9 @@ function fixerFor(findingId: string): Fixer | null {
   // The analyzer emits one finding per exposed env file, keyed by filename.
   if (findingId.startsWith('security-env-exposed-')) {
     const envFile = findingId.slice('security-env-exposed-'.length);
-    if (envFile) return ignoreEntryFixer(envFile, `${envFile}`);
+    // The audit raised this after reading the file, so it is committed and its
+    // contents are already published wherever the repository is.
+    if (envFile) return ignoreEntryFixer(envFile, { label: envFile, secret: true });
   }
 
   return null;

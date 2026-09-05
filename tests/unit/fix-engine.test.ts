@@ -452,6 +452,28 @@ describe('.gitignore entries', () => {
     expect(plan.files[0].patched).toContain('.env.local');
   });
 
+  it('never claims a committed secret stops being tracked', async () => {
+    // The audit only raises this after reading the file, so it is committed.
+    // .gitignore governs untracked files, and saying otherwise would tell a
+    // reader their credentials are safe while they are still published.
+    const source = createInMemorySource({ '.gitignore': 'node_modules\n' });
+    const plan = await planFixes([finding('security-env-exposed-.env')], source);
+    const rationale = plan.applied[0].rationale;
+
+    expect(rationale).not.toContain('stops being tracked');
+    expect(rationale).toContain('git rm --cached .env');
+    expect(rationale).toContain('rotate');
+    expect(rationale).toContain('the pull request is itself a disclosure');
+  });
+
+  it('says what node_modules actually needs, without the secret warning', async () => {
+    const plan = await planFixes([finding('gitignore-node-modules')], createInMemorySource({}));
+    const rationale = plan.applied[0].rationale;
+
+    expect(rationale).toContain('git rm -r --cached node_modules');
+    expect(rationale).not.toContain('rotate');
+  });
+
   it('refuses when the pattern is already ignored', async () => {
     const source = createInMemorySource({ '.gitignore': 'node_modules/\n' });
     const plan = await planFixes([finding('gitignore-node-modules')], source);
