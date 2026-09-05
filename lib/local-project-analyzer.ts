@@ -8,7 +8,15 @@ export interface LocalAuditFinding {
   description: string;
   impact: 'Low' | 'Medium' | 'High';
   recommendation: string;
-  autoFixAvailable: boolean;
+  /*
+   * There is no autoFixAvailable flag.
+   *
+   * The analyzer wrote one on every finding and set it to false every time,
+   * while the fix engine could patch seven of them — a field that contradicted
+   * the product and was read by nothing. Whether a finding can be fixed is a
+   * fact about the fixers, so `hasFixer(id)` answers it, and whether it will
+   * be is a fact about this repository, which only planFixes can decide.
+   */
   /** Exact text observed in the project that triggered this finding. */
   evidence: string;
   source: string;
@@ -182,7 +190,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'compilers and dev dependencies ship inside the production image.',
       impact: 'High',
       recommendation: 'Split the Dockerfile into a builder stage and a slim runtime stage.',
-      autoFixAvailable: false,
       evidence: fromLines.join(' | ') || 'no FROM instruction found',
       source: 'Dockerfile',
     });
@@ -196,7 +203,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
       description: 'No alpine or slim base image was found, which inflates image size and attack surface.',
       impact: 'Medium',
       recommendation: 'Use an -alpine or -slim tag for the runtime stage.',
-      autoFixAvailable: false,
       evidence: fromLines.join(' | '),
       source: 'Dockerfile',
     });
@@ -210,7 +216,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
       description: 'No USER instruction is present, so the process runs as root inside the container.',
       impact: 'Medium',
       recommendation: 'Create an unprivileged user and add a USER instruction before CMD.',
-      autoFixAvailable: false,
       evidence: 'no USER instruction in Dockerfile',
       source: 'Dockerfile',
     });
@@ -235,7 +240,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'A base image with no tag, or on latest, resolves to whatever is current at build time, so the same Dockerfile produces different images over time.',
       impact: 'Medium',
       recommendation: 'Pin the base image to a version tag, or to a digest for an exact build.',
-      autoFixAvailable: false,
       evidence: unpinned.join(' | '),
       source: 'Dockerfile',
     });
@@ -250,7 +254,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'The whole working directory is copied into the image with nothing excluded, so .env files, .git history and node_modules ship inside the container.',
       impact: 'High',
       recommendation: 'Add a .dockerignore covering .git, node_modules, .env* and build output.',
-      autoFixAvailable: false,
       evidence: 'COPY . . and no .dockerignore in the project',
       source: 'Dockerfile',
     });
@@ -269,7 +272,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'ADD with a URL downloads at build time without verifying what arrived, so the image contents depend on a third party staying honest and available.',
       impact: 'Medium',
       recommendation: 'Download with curl and verify a checksum, or vendor the file into the repository.',
-      autoFixAvailable: false,
       evidence: remoteAdd.join(' | '),
       source: 'Dockerfile',
     });
@@ -284,7 +286,6 @@ function inspectDockerfile(dockerfile: string, hasDockerignore: boolean): LocalA
         'npm install may resolve versions differently than the lockfile, which makes builds non-reproducible.',
       impact: 'Medium',
       recommendation: 'Use npm ci so the build always matches package-lock.json.',
-      autoFixAvailable: false,
       evidence: 'RUN npm install',
       source: 'Dockerfile',
     });
@@ -383,8 +384,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
             'compilerOptions.strict is not set to true, so null checks and implicit any are not enforced.',
           impact: 'Medium',
           recommendation: 'Set "strict": true in tsconfig.json and fix the errors it surfaces.',
-          autoFixAvailable: false,
-          evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
+              evidence: `"strict": ${JSON.stringify(strict ?? null)}`,
           source: 'tsconfig.json',
         });
       }
@@ -408,7 +408,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'Without a lockfile, two installs of the same commit can resolve to different dependency versions.',
       impact: 'High',
       recommendation: 'Commit the lockfile your package manager produces and install from it.',
-      autoFixAvailable: false,
       evidence: `none of ${LOCKFILES.join(', ')} was found`,
       source: 'package.json',
     });
@@ -423,7 +422,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'package.json does not declare engines.node, so local, CI and production can silently run different runtimes.',
       impact: 'Low',
       recommendation: 'Declare the supported Node range under "engines" in package.json.',
-      autoFixAvailable: false,
       evidence: 'no "engines" field',
       source: 'package.json',
     });
@@ -448,7 +446,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'A dependency pointing at git, a URL or a local path is not covered by the npm advisory database and can change without a version bump.',
       impact: 'Medium',
       recommendation: 'Publish the package to a registry, or vendor it and pin the exact commit.',
-      autoFixAvailable: false,
       evidence: remoteDeps.join(' | '),
       source: 'package.json',
     });
@@ -471,7 +468,6 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         'Without that rule the dependency tree can be committed, which bloats the repository and ships whatever was installed locally.',
       impact: 'Low',
       recommendation: 'Add node_modules to .gitignore.',
-      autoFixAvailable: false,
       evidence: 'no node_modules rule in .gitignore',
       source: '.gitignore',
     });
@@ -488,8 +484,7 @@ export async function auditProject(source: ProjectSource): Promise<LocalAuditRep
         description: 'A secrets file that git does not ignore can be committed and published by accident.',
         impact: 'High',
         recommendation: `Add ${envFile} to .gitignore and rotate any credential that was already committed.`,
-        autoFixAvailable: false,
-        evidence: `${envFile} exists and .gitignore has no matching .env rule`,
+          evidence: `${envFile} exists and .gitignore has no matching .env rule`,
         source: '.gitignore',
       });
     }

@@ -21,7 +21,6 @@ function report(overrides: Partial<LocalAuditReport> = {}): LocalAuditReport {
         description: "No USER instruction is present.",
         impact: "Medium",
         recommendation: "Add a USER instruction before CMD.",
-        autoFixAvailable: false,
         evidence: "no USER instruction in Dockerfile",
         source: "Dockerfile",
       },

@@ -11,7 +11,6 @@ function finding(id: string, overrides: Partial<LocalAuditFinding> = {}): LocalA
     description: '',
     impact: 'Medium',
     recommendation: '',
-    autoFixAvailable: false,
     evidence: '',
     source: 'Dockerfile',
     ...overrides,

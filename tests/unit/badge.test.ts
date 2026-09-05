@@ -26,7 +26,6 @@ function finding(id: string): LocalAuditFinding {
     description: "",
     impact: "Medium",
     recommendation: "",
-    autoFixAvailable: false,
     evidence: "",
     source: "Dockerfile",
   };
