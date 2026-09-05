@@ -1,17 +1,21 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
-import type { LocalAuditReport } from "@/lib/local-project-analyzer";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import type { LocalAuditFinding, LocalAuditReport } from "@/lib/local-project-analyzer";
 import type { SecurityScanResult } from "@/lib/security-scanner";
 import { toAgentPrompt } from "@/lib/report-text";
+import { hasFixer } from "@/lib/fix-engine";
 
 type Tab = "findings" | "advisories";
 
 /**
  * The palette is deliberately almost colourless. This tool's only claim is that
  * what it shows was measured, and a dashboard that shouts reads like a demo.
- * One warm hue is reserved for a high-impact finding and for anything the audit
- * could not measure.
+ * One warm hue is reserved for a high-impact finding, for anything the audit
+ * could not measure, and for the score a repository has not earned yet.
+ *
+ * The two diff hues are the exception, and they are dim on purpose: a patch is
+ * read line by line, so the ink has to carry the meaning, not the background.
  */
 const THEME = {
   "--ground": "#0b0e11",
@@ -22,6 +26,10 @@ const THEME = {
   "--ink-faint": "#5b666e",
   "--flag": "#c8763e",
   "--ok": "#7c9c88",
+  "--add": "#83b494",
+  "--del": "#bf7a70",
+  "--add-bg": "rgba(131, 180, 148, 0.09)",
+  "--del-bg": "rgba(191, 122, 112, 0.09)",
 } as React.CSSProperties;
 
 const TABS: Array<{ id: Tab; label: string }> = [
@@ -31,12 +39,366 @@ const TABS: Array<{ id: Tab; label: string }> = [
 
 const HEAVY = new Set(["High", "Critical"]);
 
+interface PreviewFile {
+  filePath: string;
+  created: boolean;
+  diff: string;
+  findingIds: string[];
+}
+
+interface PreviewPlan {
+  analyzable: boolean;
+  healthScore: number | null;
+  projectedScore: number | null;
+  files: PreviewFile[];
+  applied: Array<{ findingId: string; filePath: string; rationale: string }>;
+  refused: Array<{ findingId: string; reason: string }>;
+  unavailable: Array<{ findingId: string; reason: string }>;
+}
+
+/**
+ * What the fixer concluded about one finding.
+ *
+ * "refuse" and "unavailable" are kept apart on screen for the same reason they
+ * are kept apart in the engine: one is a judgement about the repository, the
+ * other is the absence of one.
+ */
+type Verdict =
+  | { kind: "fix"; rationale: string }
+  | { kind: "refuse"; reason: string }
+  | { kind: "unavailable"; reason: string };
+
+const VERDICT_PRESENTATION: Record<
+  Verdict["kind"],
+  { state: string; tone: string; label: string }
+> = {
+  fix: { state: "patched", tone: "text-[var(--add)]", label: "patch" },
+  refuse: { state: "needs you", tone: "text-[var(--ink-faint)]", label: "refused" },
+  unavailable: { state: "not measured", tone: "text-[var(--flag)]", label: "not measured" },
+};
+
+/* ------------------------------------------------------------------ *
+ * The measure
+ * ------------------------------------------------------------------ */
+
+/**
+ * The score as a position on a scale, not a number on its own.
+ *
+ * A bare 78 invites the only question that matters — compared to what — and
+ * answers it with nothing. Drawn against the full range, with the part the
+ * pending fixes would recover marked separately, the same number says where
+ * the repository stands and how far the patch moves it. The caret marks the
+ * projected score for the same reason the logo carries one: it points at the
+ * exact place being claimed.
+ */
+function ScoreMeter({ score, projected }: { score: number; projected: number | null }) {
+  const target = projected !== null && projected > score ? projected : score;
+  const recoverable = target - score;
+
+  return (
+    <figure className="m-0">
+      <figcaption className="flex items-baseline justify-between gap-4">
+        <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+          health
+        </span>
+        <span className="font-mono text-sm tabular-nums">
+          <span className={recoverable > 0 ? "text-[var(--ink-dim)]" : "text-[var(--ink)]"}>
+            {score}
+          </span>
+          {recoverable > 0 && (
+            <>
+              <span className="px-1.5 text-[var(--ink-faint)]">&rarr;</span>
+              <span className="text-[var(--flag)]">{target}</span>
+            </>
+          )}
+          <span className="pl-1.5 text-[var(--ink-faint)]">/100</span>
+        </span>
+      </figcaption>
+
+      <div
+        className="relative mt-3 h-[2px] w-full bg-[var(--line)]"
+        role="img"
+        aria-label={
+          recoverable > 0
+            ? `Health ${score} out of 100, rising to ${target} once the computed fixes land.`
+            : `Health ${score} out of 100.`
+        }
+      >
+        <div
+          className="absolute inset-y-0 left-0 bg-[var(--ink)] transition-[width] duration-500"
+          style={{ width: `${score}%` }}
+        />
+        {recoverable > 0 && (
+          <div
+            className="absolute inset-y-0 bg-[var(--flag)] transition-[width] duration-500"
+            style={{ left: `${score}%`, width: `${recoverable}%` }}
+          />
+        )}
+      </div>
+
+      <div className="relative h-4">
+        <span
+          aria-hidden
+          className="absolute top-0 -translate-x-1/2 font-mono text-base leading-none text-[var(--flag)] transition-[left] duration-500"
+          style={{ left: `${Math.min(target, 99)}%` }}
+        >
+          ^
+        </span>
+      </div>
+    </figure>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * The patch
+ * ------------------------------------------------------------------ */
+
+type DiffLineKind = "add" | "del" | "hunk" | "context";
+
+function classifyDiffLine(line: string): DiffLineKind {
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "context";
+}
+
+const DIFF_LINE_STYLE: Record<DiffLineKind, string> = {
+  add: "bg-[var(--add-bg)] text-[var(--add)]",
+  del: "bg-[var(--del-bg)] text-[var(--del)]",
+  hunk: "text-[var(--ink-faint)]",
+  context: "text-[var(--ink-dim)]",
+};
+
+/**
+ * Renders one file's patch.
+ *
+ * The `---` and `+++` header lines are dropped: this component already names
+ * the file above the diff, and repeating it in a colour that means "removed"
+ * reads, for a second, like the file itself is being deleted.
+ */
+function DiffFile({ file }: { file: PreviewFile }) {
+  const lines = file.diff.split("\n").filter((line) => !/^(---|\+\+\+) /.test(line));
+
+  return (
+    <article className="border-t border-[var(--line)] py-7">
+      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+        <h3 className="font-mono text-sm text-[var(--ink)]">{file.filePath}</h3>
+        <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+          {file.created ? "created" : "modified"}
+        </span>
+      </header>
+
+      <pre className="mt-4 overflow-x-auto border-l border-[var(--line)] font-mono text-xs leading-[1.7]">
+        <code>
+          {lines.map((line, index) => (
+            <span
+              key={index}
+              className={`block whitespace-pre pl-4 pr-3 ${DIFF_LINE_STYLE[classifyDiffLine(line)]}`}
+            >
+              {line === "" ? " " : line}
+            </span>
+          ))}
+        </code>
+      </pre>
+    </article>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * A finding
+ * ------------------------------------------------------------------ */
+
+interface FindingRowProps {
+  finding: LocalAuditFinding;
+  /** Set once a plan has been computed: what the fixer decided about this one. */
+  verdict: Verdict | null;
+  prUrl?: string;
+}
+
+function FindingRow({ finding, verdict, prUrl }: FindingRowProps) {
+  const heavy = HEAVY.has(finding.impact);
+
+  // Severity is carried by the rule down the left edge as well as by the word,
+  // so a page of findings can be skimmed without reading any of them.
+  const stripe = heavy
+    ? "border-[var(--flag)]"
+    : finding.impact === "Medium"
+      ? "border-[var(--ink-faint)]"
+      : "border-[var(--line)]";
+
+  const presentation = verdict ? VERDICT_PRESENTATION[verdict.kind] : null;
+
+  const state = presentation
+    ? { label: presentation.state, tone: presentation.tone }
+    : hasFixer(finding.id)
+      ? { label: "fixable", tone: "text-[var(--ink-dim)]" }
+      : { label: "needs you", tone: "text-[var(--ink-faint)]" };
+
+  return (
+    <article className={`border-t border-l-2 ${stripe} border-t-[var(--line)] py-7 pl-5`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+        <div className="flex items-baseline gap-4">
+          <span
+            className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
+              heavy ? "text-[var(--flag)]" : "text-[var(--ink-faint)]"
+            }`}
+          >
+            {finding.impact}
+          </span>
+          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+            {finding.category}
+          </span>
+        </div>
+        <div className="flex items-baseline gap-4">
+          <span className={`font-mono text-[11px] uppercase tracking-[0.2em] ${state.tone}`}>
+            {state.label}
+          </span>
+          <span className="font-mono text-[11px] text-[var(--ink-faint)]">{finding.source}</span>
+        </div>
+      </div>
+
+      <h2 className="mt-4 text-lg font-normal tracking-tight">{finding.title}</h2>
+
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+        {finding.description}
+      </p>
+
+      {/* The claim and the text that produced it, on the same screen. */}
+      <p className="mt-5 border-l border-[var(--line)] pl-4 font-mono text-xs leading-relaxed break-words text-[var(--ink-dim)]">
+        <span className="text-[var(--ink-faint)]">observed </span>
+        <span className="text-[var(--ink)]">{finding.evidence}</span>
+      </p>
+
+      {verdict && presentation ? (
+        <p className="mt-4 max-w-2xl text-sm leading-relaxed">
+          <span
+            className={`font-mono text-[11px] uppercase tracking-[0.2em] ${presentation.tone}`}
+          >
+            {presentation.label}{" "}
+          </span>
+          <span className="text-[var(--ink-dim)]">
+            {verdict.kind === "fix" ? verdict.rationale : verdict.reason}
+          </span>
+        </p>
+      ) : (
+        <p className="mt-4 max-w-2xl text-sm text-[var(--ink-dim)]">{finding.recommendation}</p>
+      )}
+
+      {prUrl && (
+        <a
+          href={prUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-4 inline-block font-mono text-xs text-[var(--ok)] underline decoration-1 underline-offset-4"
+        >
+          view pull request
+        </a>
+      )}
+    </article>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Loading
+ * ------------------------------------------------------------------ */
+
+/** What one load produced. Plain data — nothing here can touch component state. */
+type AuditOutcome =
+  | { kind: "repo"; report: LocalAuditReport; scan: SecurityScanResult; note: string }
+  | { kind: "rejected"; error: string }
+  | { kind: "advisories"; scan: SecurityScanResult; note: string }
+  | { kind: "local"; report: LocalAuditReport; note: string }
+  | { kind: "failed"; note: string };
+
+/**
+ * Fetches, and returns what it found.
+ *
+ * Reading and recording are separated on purpose. While this runs, the reader
+ * can type another repository and start a second load; if this one applied its
+ * own results it would race the newer one and could win. Returning the outcome
+ * lets the caller check, once the answer is back, whether it is still the
+ * answer to the question being asked.
+ */
+async function fetchAudit(
+  target: { owner: string; repo: string } | null,
+  tab: Tab,
+): Promise<AuditOutcome> {
+  try {
+    if (target) {
+      // One request feeds both tabs, so switching between them cannot swap the
+      // repository for this project.
+      const res = await fetch("/api/sentinel/audit-repo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(target),
+      });
+      const data = await res.json();
+
+      if (!data.success) {
+        return { kind: "rejected", error: data.error ?? "The repository could not be audited." };
+      }
+
+      return {
+        kind: "repo",
+        report: data.report,
+        scan: data.scan,
+        note: data.report.analyzable
+          ? `${data.report.findingsCount} finding(s) in ${data.report.origin}`
+          : `Could not analyze ${data.report.origin}`,
+      };
+    }
+
+    if (tab === "advisories") {
+      const res = await fetch("/api/sentinel/security");
+      const data = await res.json();
+      return {
+        kind: "advisories",
+        scan: data.result,
+        note: data.result?.ok
+          ? `${data.result.packagesScanned} packages checked against the npm advisory database`
+          : `Advisory scan unavailable: ${data.result?.error ?? "unknown error"}`,
+      };
+    }
+
+    const res = await fetch("/api/sentinel/local-audit");
+    const data = await res.json();
+
+    if (!data.success) return { kind: "failed", note: "The audit could not be read." };
+
+    return {
+      kind: "local",
+      report: data.report,
+      note: data.report.analyzable
+        ? `Read ${data.report.filesInspected.length} file(s) in ${data.report.origin}`
+        : "No source tree reachable from the running process",
+    };
+  } catch {
+    return { kind: "failed", note: "Request failed." };
+  }
+}
+
+async function fetchPullRequests(): Promise<Record<string, string> | null> {
+  try {
+    const res = await fetch("/api/sentinel/local-fix");
+    const data = await res.json();
+    return data.success ? (data.fixes as Record<string, string>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Dashboard
+ * ------------------------------------------------------------------ */
+
 export function SentinelDashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("findings");
   const [report, setReport] = useState<LocalAuditReport | null>(null);
   const [scan, setScan] = useState<SecurityScanResult | null>(null);
   const [loading, setLoading] = useState(true);
-  const [fixingId, setFixingId] = useState<string | null>(null);
+  const [plan, setPlan] = useState<PreviewPlan | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [pullRequests, setPullRequests] = useState<Record<string, string>>({});
   const [activity, setActivity] = useState<string[]>([]);
   const [repoInput, setRepoInput] = useState("");
@@ -50,80 +412,84 @@ export function SentinelDashboard() {
     setActivity((prev) => [line, ...prev].slice(0, 40));
   }, []);
 
-  const loadPullRequests = useCallback(async () => {
-    try {
-      const res = await fetch("/api/sentinel/local-fix");
-      const data = await res.json();
-      if (data.success) setPullRequests(data.fixes);
-    } catch {
-      log("Could not read the pull request history.");
-    }
-  }, [log]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      if (target) {
-        // One request feeds both tabs, so switching between them cannot swap
-        // the repository for this project.
-        log(`Reading github.com/${target.owner}/${target.repo}`);
-        const res = await fetch("/api/sentinel/audit-repo", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(target),
-        });
-        const data = await res.json();
-
-        if (!data.success) {
-          setRepoError(data.error ?? "The repository could not be audited.");
-          log(data.error ?? "The repository could not be audited.");
-          setTarget(null);
-          return;
-        }
-
-        setReport(data.report);
-        setScan(data.scan);
-        log(
-          data.report.analyzable
-            ? `${data.report.findingsCount} finding(s) in ${data.report.origin}`
-            : `Could not analyze ${data.report.origin}`,
-        );
-        return;
-      }
-
-      if (activeTab === "advisories") {
-        const res = await fetch("/api/sentinel/security");
-        const data = await res.json();
-        setScan(data.result);
-        log(
-          data.result?.ok
-            ? `${data.result.packagesScanned} packages checked against the npm advisory database`
-            : `Advisory scan unavailable: ${data.result?.error ?? "unknown error"}`,
-        );
-        return;
-      }
-
-      const res = await fetch("/api/sentinel/local-audit");
-      const data = await res.json();
-      if (data.success) {
-        setReport(data.report);
-        log(
-          data.report.analyzable
-            ? `Read ${data.report.filesInspected.length} file(s) in ${data.report.origin}`
-            : "No source tree reachable from the running process",
-        );
-      }
-    } catch {
-      log("Request failed.");
-    } finally {
-      setLoading(false);
-    }
-  }, [activeTab, target, log]);
-
+  /**
+   * Records a load once it comes back, and only if it is still the current one.
+   *
+   * The `settled` flag is what makes a stale answer harmless: when the reader
+   * changes target mid-flight, the effect that started the earlier request has
+   * already been cleaned up, and its result is dropped instead of overwriting
+   * the newer one.
+   */
   useEffect(() => {
-    load();
-    loadPullRequests();
-  }, [load, loadPullRequests]);
+    let settled = false;
+
+    fetchAudit(target, activeTab).then((outcome) => {
+      if (settled) return;
+
+      setLoading(false);
+      log(outcome.kind === "rejected" ? outcome.error : outcome.note);
+
+      switch (outcome.kind) {
+        case "repo":
+          setReport(outcome.report);
+          setScan(outcome.scan);
+          break;
+        case "rejected":
+          setRepoError(outcome.error);
+          setTarget(null);
+          break;
+        case "advisories":
+          setScan(outcome.scan);
+          break;
+        case "local":
+          setReport(outcome.report);
+          break;
+        case "failed":
+          break;
+      }
+    });
+
+    fetchPullRequests().then((fixes) => {
+      if (!settled && fixes) setPullRequests(fixes);
+    });
+
+    return () => {
+      settled = true;
+    };
+  }, [target, activeTab, log]);
+
+  /** How many findings have a fixer at all, before any precondition is tested. */
+  const fixableCount = useMemo(
+    () => report?.findings.filter((finding) => hasFixer(finding.id)).length ?? 0,
+    [report],
+  );
+
+  const verdicts = useMemo(() => {
+    const map = new Map<string, Verdict>();
+    if (!plan) return map;
+    for (const fix of plan.applied) map.set(fix.findingId, { kind: "fix", rationale: fix.rationale });
+    for (const refusal of plan.refused) {
+      map.set(refusal.findingId, { kind: "refuse", reason: refusal.reason });
+    }
+    for (const item of plan.unavailable) {
+      map.set(item.findingId, { kind: "unavailable", reason: item.reason });
+    }
+    return map;
+  }, [plan]);
+
+  // Pull requests are opened against the repository this deployment is
+  // configured for, which is only the same tree when no remote target is set.
+  const canOpenPullRequest = target === null;
+
+  /**
+   * A plan describes one tree, so it is dropped whenever the tree changes.
+   * Showing a patch for files the panel above is no longer reporting on would
+   * be the one kind of lie this tool exists to avoid.
+   */
+  function startLoading() {
+    setLoading(true);
+    setPlan(null);
+  }
 
   function auditRepository() {
     const match = repoInput
@@ -137,13 +503,51 @@ export function SentinelDashboard() {
     }
 
     setRepoError(null);
+    startLoading();
+    log(`Reading github.com/${match[1]}/${match[2]}`);
     setTarget({ owner: match[1], repo: match[2] });
   }
 
   function auditThisProject() {
     setRepoInput("");
     setRepoError(null);
+    // Setting the same value would not re-run the effect, leaving the spinner
+    // on forever with nothing on its way to turn it off.
+    if (target === null) return;
+    startLoading();
     setTarget(null);
+  }
+
+  async function previewFixes() {
+    setPreviewing(true);
+    log("Computing the patch from the files as they are.");
+    try {
+      const res = await fetch("/api/sentinel/preview-fix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(target ?? { local: true }),
+      });
+      const data = await res.json();
+
+      if (!data.success) {
+        log(data.error ?? "The patch could not be computed.");
+        return;
+      }
+
+      setPlan(data);
+
+      const unread = (data.unavailable ?? []).length;
+      const summary =
+        data.files.length === 0
+          ? "No change could be computed safely. Every finding is explained below."
+          : `${data.applied.length} fix(es) across ${data.files.length} file(s).`;
+
+      log(unread > 0 ? `${summary} ${unread} could not be read.` : summary);
+    } catch {
+      log("The patch request failed.");
+    } finally {
+      setPreviewing(false);
+    }
   }
 
   async function copyForAgent() {
@@ -164,14 +568,14 @@ export function SentinelDashboard() {
     }
   }
 
-  async function openPullRequest(id: string) {
-    setFixingId(id);
-    log(`Preparing a pull request for ${id}`);
+  async function openPullRequest() {
+    setOpening(true);
+    log("Opening a pull request with the patch.");
     try {
       const res = await fetch("/api/sentinel/local-fix", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ all: true }),
       });
       const data = await res.json();
       if (data.success) {
@@ -181,16 +585,18 @@ export function SentinelDashboard() {
         log(data.error);
       }
     } catch {
-      log(`Request failed for ${id}.`);
+      log("The pull request request failed.");
     } finally {
-      setFixingId(null);
+      setOpening(false);
     }
   }
+
+  const score = plan?.healthScore ?? report?.healthScore ?? null;
 
   return (
     <div
       style={THEME}
-      className="min-h-dvh bg-[var(--ground)] text-[var(--ink)] font-sans antialiased selection:bg-[var(--ink)] selection:text-[var(--ground)]"
+      className="min-h-dvh bg-[var(--ground)] font-sans text-[var(--ink)] antialiased selection:bg-[var(--ink)] selection:text-[var(--ground)]"
     >
       <div className="mx-auto w-full max-w-5xl px-6 py-12 md:px-10 md:py-16">
         <header className="flex flex-col gap-8 sm:flex-row sm:items-baseline sm:justify-between">
@@ -201,11 +607,16 @@ export function SentinelDashboard() {
               sentinel
               <span
                 aria-hidden
-                className="absolute left-0 top-full -mt-0.5 text-base leading-none text-[var(--flag)]"
+                className="absolute top-full left-0 -mt-0.5 text-base leading-none text-[var(--flag)]"
               >
                 ^
               </span>
             </span>
+            {/* The badge is an SVG generated per request by a route in this app,
+                and it is the same URL a README embeds. next/image would route a
+                already-tiny vector through an optimizer that cannot improve it,
+                and would hide the exact URL this page is demonstrating. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/api/sentinel/badge?repo=obviousmarketingdigital-lab/sentinelops-ai"
               alt="Sentinel health badge for this repository"
@@ -217,7 +628,11 @@ export function SentinelDashboard() {
             {TABS.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  if (activeTab === tab.id) return;
+                  startLoading();
+                  setActiveTab(tab.id);
+                }}
                 className={`font-mono text-xs tracking-wide transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-4 focus-visible:outline-[var(--ink)] ${
                   activeTab === tab.id
                     ? "text-[var(--ink)] underline decoration-[var(--flag)] decoration-1 underline-offset-8"
@@ -231,10 +646,10 @@ export function SentinelDashboard() {
         </header>
 
         <section className="mt-16">
-          <h1 className="max-w-2xl text-3xl font-semibold leading-[1.15] tracking-[-0.025em] md:text-5xl">
+          <h1 className="max-w-2xl text-3xl leading-[1.15] font-semibold tracking-[-0.025em] md:text-5xl">
             Point it at a repository.
             <span className="block text-[var(--ink-dim)]">
-              It reads the files and reports only what it found.
+              It reads the files, reports only what it found, and writes the patch.
             </span>
           </h1>
 
@@ -254,7 +669,7 @@ export function SentinelDashboard() {
               <button
                 onClick={auditRepository}
                 disabled={loading}
-                className="border border-[var(--ink)] px-5 py-2 font-mono text-xs transition-colors hover:bg-[var(--ink)] hover:text-[var(--ground)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+                className="border border-[var(--ink)] px-5 py-2 font-mono text-xs transition-colors hover:bg-[var(--ink)] hover:text-[var(--ground)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)] disabled:opacity-40"
               >
                 {loading ? "reading" : "audit"}
               </button>
@@ -271,45 +686,108 @@ export function SentinelDashboard() {
 
           {activeTab === "findings" && (
             <>
-              {report && (
-                <p className="mt-14 font-mono text-xs leading-relaxed text-[var(--ink-dim)]">
-                  <span className="text-[var(--ink)]">{report.origin}</span>
-                  {report.analyzable && (
-                    <>
-                      {" · "}
-                      {report.findingsCount === 0
-                        ? "no findings"
-                        : `${report.findingsCount} finding${report.findingsCount === 1 ? "" : "s"}`}
-                      {" · "}
-                      {report.filesInspected.length} file
-                      {report.filesInspected.length === 1 ? "" : "s"} read
-                      {report.healthScore !== null && <> · health {report.healthScore}</>}
-                    </>
-                  )}
-                  {report.filesUnreadable.length > 0 && (
-                    <span className="text-[var(--flag)]">
-                      {" · "}
-                      {report.filesUnreadable.length} unreadable
-                    </span>
-                  )}
-                </p>
-              )}
+              {report?.analyzable && score !== null && (
+                <div className="mt-14 grid gap-x-12 gap-y-8 border-t border-[var(--line)] pt-8 md:grid-cols-[1fr_18rem]">
+                  <dl className="grid grid-cols-[6.5rem_1fr] gap-x-4 gap-y-1.5 self-start font-mono text-xs">
+                    <dt className="text-[var(--ink-faint)]">source</dt>
+                    <dd className="break-words text-[var(--ink)]">{report.origin}</dd>
+                    <dt className="text-[var(--ink-faint)]">findings</dt>
+                    <dd className="text-[var(--ink-dim)]">
+                      {report.findingsCount === 0 ? "none" : report.findingsCount}
+                      {fixableCount > 0 && (
+                        <span className="text-[var(--ink-faint)]"> · {fixableCount} fixable</span>
+                      )}
+                    </dd>
+                    <dt className="text-[var(--ink-faint)]">files read</dt>
+                    <dd className="text-[var(--ink-dim)]">{report.filesInspected.length}</dd>
+                    {report.filesUnreadable.length > 0 && (
+                      <>
+                        <dt className="text-[var(--ink-faint)]">unreadable</dt>
+                        <dd className="text-[var(--flag)]">{report.filesUnreadable.length}</dd>
+                      </>
+                    )}
+                  </dl>
 
-              {report?.analyzable && (
-                <div className="mt-4 flex items-center gap-4">
-                  <button
-                    onClick={copyForAgent}
-                    className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
-                  >
-                    {copied ? "copied" : "copy for your agent"}
-                  </button>
-                  <span className="font-mono text-[11px] text-[var(--ink-faint)]">
-                    paste into Claude Code, Cursor or any coding agent
-                  </span>
+                  <ScoreMeter score={score} projected={plan?.projectedScore ?? null} />
                 </div>
               )}
 
-              <div className="mt-6">
+              {report?.analyzable && report.findings.length > 0 && (
+                <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-3">
+                  {fixableCount > 0 && (
+                    <button
+                      onClick={previewFixes}
+                      disabled={previewing}
+                      className="border border-[var(--ink)] px-5 py-2 font-mono text-xs transition-colors hover:bg-[var(--ink)] hover:text-[var(--ground)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)] disabled:opacity-40"
+                    >
+                      {previewing
+                        ? "computing the patch"
+                        : plan
+                          ? "recompute the patch"
+                          : `write the patch for ${fixableCount} finding${fixableCount === 1 ? "" : "s"}`}
+                    </button>
+                  )}
+
+                  <button
+                    onClick={copyForAgent}
+                    className="border border-[var(--line)] px-4 py-2 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+                  >
+                    {copied ? "copied" : "copy for your agent"}
+                  </button>
+
+                  {plan && plan.files.length > 0 && canOpenPullRequest && (
+                    <button
+                      onClick={openPullRequest}
+                      disabled={opening}
+                      className="border border-[var(--line)] px-4 py-2 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)] disabled:opacity-40"
+                    >
+                      {opening ? "opening" : "open pull request"}
+                    </button>
+                  )}
+
+                  {plan && plan.files.length > 0 && !canOpenPullRequest && (
+                    <span className="font-mono text-[11px] text-[var(--ink-faint)]">
+                      pull requests open on the repository this deployment is configured for
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* The patch, in full, before anything is written anywhere. */}
+              {plan && plan.files.length > 0 && (
+                <section className="mt-14">
+                  <h2 className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+                    The patch
+                    <span className="text-[var(--ink-faint)]">
+                      {" · "}
+                      {plan.files.length} file{plan.files.length === 1 ? "" : "s"}
+                    </span>
+                  </h2>
+                  <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+                    Computed from these files as they are now. Nothing has been written.
+                  </p>
+                  <div className="mt-6">
+                    {plan.files.map((file) => (
+                      <DiffFile key={file.filePath} file={file} />
+                    ))}
+                    <div className="h-px bg-[var(--line)]" />
+                  </div>
+                </section>
+              )}
+
+              {plan && plan.files.length === 0 && (
+                <div className="mt-14 border-t border-[var(--line)] pt-6">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--flag)]">
+                    Nothing patched
+                  </p>
+                  <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+                    No edit could be computed safely from these files. Each finding below carries
+                    the reason it was left alone.
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-14">
                 {loading ? (
                   <p className="py-16 font-mono text-xs text-[var(--ink-faint)]">reading files…</p>
                 ) : report && !report.analyzable ? (
@@ -318,7 +796,10 @@ export function SentinelDashboard() {
                       Nothing measured
                     </p>
                     {report.notes.map((note) => (
-                      <p key={note} className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
+                      <p
+                        key={note}
+                        className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]"
+                      >
                         {note}
                       </p>
                     ))}
@@ -336,68 +817,17 @@ export function SentinelDashboard() {
                   </div>
                 ) : (
                   <div>
-                    {report?.findings.map((finding) => {
-                      const prUrl = pullRequests[finding.id];
-
-                      return (
-                        <article key={finding.id} className="border-t border-[var(--line)] py-8">
-                          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-                            <div className="flex items-baseline gap-4">
-                              <span
-                                className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
-                                  HEAVY.has(finding.impact)
-                                    ? "text-[var(--flag)]"
-                                    : "text-[var(--ink-faint)]"
-                                }`}
-                              >
-                                {finding.impact}
-                              </span>
-                              <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
-                                {finding.category}
-                              </span>
-                            </div>
-                            <span className="font-mono text-[11px] text-[var(--ink-faint)]">
-                              {finding.source}
-                            </span>
-                          </div>
-
-                          <h2 className="mt-4 text-lg font-normal tracking-tight">{finding.title}</h2>
-
-                          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-dim)]">
-                            {finding.description}
-                          </p>
-
-                          <p className="mt-5 border-l border-[var(--line)] pl-4 font-mono text-xs leading-relaxed text-[var(--ink-dim)] break-words">
-                            <span className="text-[var(--ink-faint)]">observed </span>
-                            <span className="text-[var(--ink)]">{finding.evidence}</span>
-                          </p>
-
-                          <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
-                            <p className="max-w-xl text-sm text-[var(--ink-dim)]">
-                              {finding.recommendation}
-                            </p>
-                            {prUrl ? (
-                              <a
-                                href={prUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="font-mono text-xs text-[var(--ok)] underline decoration-1 underline-offset-4"
-                              >
-                                view pull request
-                              </a>
-                            ) : (
-                              <button
-                                onClick={() => openPullRequest(finding.id)}
-                                disabled={fixingId === finding.id}
-                                className="border border-[var(--line)] px-4 py-1.5 font-mono text-xs text-[var(--ink-dim)] transition-colors hover:border-[var(--ink-dim)] hover:text-[var(--ink)] disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
-                              >
-                                {fixingId === finding.id ? "opening" : "open pull request"}
-                              </button>
-                            )}
-                          </div>
-                        </article>
-                      );
-                    })}
+                    <h2 className="mb-6 font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+                      Findings
+                    </h2>
+                    {report?.findings.map((finding) => (
+                      <FindingRow
+                        key={finding.id}
+                        finding={finding}
+                        verdict={verdicts.get(finding.id) ?? null}
+                        prUrl={pullRequests[finding.id] ?? pullRequests.all}
+                      />
+                    ))}
                     <div className="h-px bg-[var(--line)]" />
                   </div>
                 )}
@@ -443,7 +873,14 @@ export function SentinelDashboard() {
                       ) : (
                         <>
                           {scan.vulnerabilities.map((vuln) => (
-                            <article key={vuln.id} className="border-t border-[var(--line)] py-8">
+                            <article
+                              key={vuln.id}
+                              className={`border-t border-l-2 border-t-[var(--line)] py-7 pl-5 ${
+                                HEAVY.has(vuln.severity)
+                                  ? "border-l-[var(--flag)]"
+                                  : "border-l-[var(--line)]"
+                              }`}
+                            >
                               <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
                                 <span
                                   className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
@@ -504,7 +941,10 @@ export function SentinelDashboard() {
             </h2>
             <ul className="mt-3 space-y-1.5">
               {activity.slice(0, 6).map((line, index) => (
-                <li key={index} className="font-mono text-xs leading-relaxed text-[var(--ink-faint)]">
+                <li
+                  key={index}
+                  className="font-mono text-xs leading-relaxed text-[var(--ink-faint)]"
+                >
                   {line}
                 </li>
               ))}

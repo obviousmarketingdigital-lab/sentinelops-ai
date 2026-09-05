@@ -1,11 +1,19 @@
+export interface PullRequestFile {
+  path: string;
+  content: string;
+}
+
 export interface CreatePullRequestOptions {
   repoOwner: string;
   repoName: string;
   title: string;
   body: string;
   branchName: string;
-  filePath: string;
-  fileContent: string;
+  /** A single file to write. Kept for callers that only change one. */
+  filePath?: string;
+  fileContent?: string;
+  /** Several files in one pull request, which is how a multi-file fix arrives. */
+  files?: PullRequestFile[];
 }
 
 export class GitHubService {
@@ -33,8 +41,18 @@ export class GitHubService {
       throw new Error('GITHUB_TOKEN not found in environment variables. Please check your .env.local file.');
     }
 
-    const { repoOwner, repoName, title, body, branchName, filePath, fileContent } = options;
+    const { repoOwner, repoName, title, body, branchName } = options;
     const baseUrl = `https://api.github.com/repos/${repoOwner}/${repoName}`;
+
+    const files: PullRequestFile[] =
+      options.files ??
+      (options.filePath !== undefined && options.fileContent !== undefined
+        ? [{ path: options.filePath, content: options.fileContent }]
+        : []);
+
+    if (files.length === 0) {
+      throw new Error('No file contents were given, so there is nothing to open a pull request for.');
+    }
 
     // 1. Get default branch SHA
     const repoRes = await fetch(baseUrl, { headers: this.getHeaders() });
@@ -60,25 +78,34 @@ export class GitHubService {
       throw new Error(`Failed to create branch: ${branchRes.statusText}`);
     }
 
-    // 3. Create/Update File (requires getting file SHA first if it exists to overwrite)
-    let fileSha: string | undefined;
-    const fileGetRes = await fetch(`${baseUrl}/contents/${filePath}?ref=${branchName}`, { headers: this.getHeaders() });
-    if (fileGetRes.ok) {
-      const fileData = await fileGetRes.json();
-      fileSha = fileData.sha;
-    }
+    // 3. Write each file in sequence. The contents API takes one path per call,
+    //    and each write needs the current SHA when the file already exists.
+    //    Sequential rather than parallel because every commit moves the branch
+    //    head, and concurrent writes race for the same parent.
+    for (const file of files) {
+      let fileSha: string | undefined;
+      const fileGetRes = await fetch(`${baseUrl}/contents/${file.path}?ref=${branchName}`, {
+        headers: this.getHeaders(),
+      });
+      if (fileGetRes.ok) {
+        const fileData = await fileGetRes.json();
+        fileSha = fileData.sha;
+      }
 
-    const filePutRes = await fetch(`${baseUrl}/contents/${filePath}`, {
-      method: 'PUT',
-      headers: this.getHeaders(),
-      body: JSON.stringify({
-        message: `sentinel: autonomous patch for ${filePath}`,
-        content: Buffer.from(fileContent).toString('base64'),
-        branch: branchName,
-        sha: fileSha,
-      }),
-    });
-    if (!filePutRes.ok) throw new Error(`Failed to write file to branch: ${filePutRes.statusText}`);
+      const filePutRes = await fetch(`${baseUrl}/contents/${file.path}`, {
+        method: 'PUT',
+        headers: this.getHeaders(),
+        body: JSON.stringify({
+          message: `sentinel: patch ${file.path}`,
+          content: Buffer.from(file.content).toString('base64'),
+          branch: branchName,
+          sha: fileSha,
+        }),
+      });
+      if (!filePutRes.ok) {
+        throw new Error(`Failed to write ${file.path} to branch: ${filePutRes.statusText}`);
+      }
+    }
 
     // 4. Open Pull Request
     const prRes = await fetch(`${baseUrl}/pulls`, {
