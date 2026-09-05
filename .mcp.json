@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "stitch-skills": {
+      "type": "git",
+      "url": "https://github.com/google-labs-code/stitch-skills.git",
+      "env": {}
+    },
+    "vercel-skills": {
+      "type": "git",
+      "url": "https://github.com/vercel-labs/skills.git",
+      "env": {}
+    }
+  }
+}
